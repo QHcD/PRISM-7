@@ -5728,4 +5728,16 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
         return root;
     }
+
+    public void ForceReattachWeapon(int level)
+    {
+        if (equippedWeaponObject != null)
+        {
+            Destroy(equippedWeaponObject);
+            equippedWeaponObject = null;
+        }
+        equippedWeaponLevel = -1;
+        weaponAttachInProgress = false;
+        EquipWeaponForLevel(level);
+    }
 }

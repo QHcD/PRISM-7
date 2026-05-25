@@ -1691,6 +1691,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
             AddFileIfPresent(Path.Combine(folder, "MainMenu_LobbyTheme.ogg"), AudioType.OGGVORBIS);
             AddFileIfPresent(Path.Combine(folder, "MainMenu_LobbyTheme.wav"), AudioType.WAV);
             AddFileIfPresent(Path.Combine(folder, "MainMenu_LobbyTheme.mp3"), AudioType.MPEG);
+            AddFileIfPresent(Path.Combine(folder, "MainMenu_LobbyTheme.mp4"), AudioType.MPEG);
         }
 
         AddVariantsInFolder(Path.Combine(Application.dataPath, "Audio"));
@@ -1706,6 +1707,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         list.Add(new LobbyLoadCandidate { Url = $"{streamingRoot}/MainMenu_LobbyTheme.ogg", Type = AudioType.OGGVORBIS });
         list.Add(new LobbyLoadCandidate { Url = $"{streamingRoot}/MainMenu_LobbyTheme.wav", Type = AudioType.WAV });
         list.Add(new LobbyLoadCandidate { Url = $"{streamingRoot}/MainMenu_LobbyTheme.mp3", Type = AudioType.MPEG });
+        list.Add(new LobbyLoadCandidate { Url = $"{streamingRoot}/MainMenu_LobbyTheme.mp4", Type = AudioType.MPEG });
     }
 #endif
 
@@ -1815,8 +1817,8 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
     void OnDestroy()
     {
-        // Don't destroy lobby music here — it persists via DontDestroyOnLoad
-        // It will keep playing across menu reloads, stop it only when leaving to gameplay
+        StopLobbyMusic();
+        _lobbyMusicLoadRoutineActive = false;
     }
 
     public TMP_FontAsset ResolveMenuFont()

@@ -1,9 +1,9 @@
 using UnityEngine;
+using UnityEngine.Rendering;
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
 
-/// <summary>
-/// Prevents industrial map geometry from disappearing at gameplay camera angles
-/// (occlusion culling, LOD pop, bad static flags). Map-only pass.
-/// </summary>
 public static class MapVisibilityStabilizer
 {
     private static bool _logged;
@@ -24,6 +24,8 @@ public static class MapVisibilityStabilizer
 
             r.forceRenderingOff = false;
             r.enabled = true;
+            r.shadowCastingMode = ShadowCastingMode.On;
+            r.receiveShadows = true;
             renderersFixed++;
 
             GameObject go = r.gameObject;
@@ -43,6 +45,11 @@ public static class MapVisibilityStabilizer
                 MeshRenderer mr = r as MeshRenderer;
                 if (mr != null)
                     ExpandRendererBounds(mr, 1.35f);
+#if UNITY_EDITOR
+                StaticEditorFlags flags = GameObjectUtility.GetStaticEditorFlags(go);
+                flags |= StaticEditorFlags.ContributeGI | StaticEditorFlags.BatchingStatic;
+                GameObjectUtility.SetStaticEditorFlags(go, flags);
+#endif
             }
         }
 

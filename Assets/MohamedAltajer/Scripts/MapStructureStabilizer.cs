@@ -98,6 +98,10 @@ public static class MapStructureStabilizer
 
         if (dup.HasProperty("_Cull"))
             dup.SetFloat("_Cull", (float)CullMode.Off);
+        if (dup.HasProperty("_CullMode"))
+            dup.SetFloat("_CullMode", (float)CullMode.Off);
+        if (dup.HasProperty("_DoubleSidedEnable"))
+            dup.SetFloat("_DoubleSidedEnable", 1f);
         dup.doubleSidedGI = true;
 
         DoubleSidedCache[source] = dup;
@@ -137,7 +141,9 @@ public static class MapStructureStabilizer
     {
         if (mat == null) return false;
         if (mat.doubleSidedGI) return true;
-        return mat.HasProperty("_Cull") && mat.GetFloat("_Cull") <= 0.5f;
+        if (mat.HasProperty("_Cull") && mat.GetFloat("_Cull") <= 0.5f) return true;
+        if (mat.HasProperty("_CullMode") && mat.GetFloat("_CullMode") <= 0.5f) return true;
+        return false;
     }
 
     private static bool TryEnsureStructureCollider(MeshFilter mf, out bool upgraded, out bool added)
@@ -191,45 +197,44 @@ public static class MapStructureStabilizer
         return upgraded || added;
     }
 
-    /// <summary>Enclosed volumes where the player stands inside and backfaces disappear.</summary>
     private static bool IsEnclosedBuildingShell(GameObject go)
     {
-        if (go == null || IsOutdoorPropName(go.name.ToLowerInvariant()))
+        if (go == null) return false;
+        string goLower = go.name.ToLowerInvariant();
+        if (goLower.Contains("skybox") || goLower.Contains("reflection")
+            || goLower.Contains("invisible") || goLower.Contains("trigger"))
             return false;
 
         for (Transform t = go.transform; t != null; t = t.parent)
         {
             string n = t.name.ToLowerInvariant();
-            if (IsOutdoorPropName(n)) return false;
-            if (IsExcludedStructureName(n)) return false;
-
             if (n.Contains("hangar") || n.Contains("building") || n.Contains("warehouse")
                 || n.Contains("office") || n.Contains("shed") || n.Contains("hall")
-                || n.Contains("roof") || n.Contains("ceiling"))
+                || n.Contains("roof") || n.Contains("ceiling") || n.Contains("module")
+                || n.Contains("interior") || n.Contains("construction") || n.Contains("kit"))
                 return true;
         }
-
         return false;
     }
 
     private static bool ShouldEnsureStructureCollider(GameObject go)
     {
-        if (go == null || IsOutdoorPropName(go.name.ToLowerInvariant()))
+        if (go == null) return false;
+        string goLower = go.name.ToLowerInvariant();
+        if (goLower.Contains("trigger") || goLower.Contains("skybox") || goLower.Contains("invisible"))
             return false;
 
         for (Transform t = go.transform; t != null; t = t.parent)
         {
             string n = t.name.ToLowerInvariant();
             if (IsOutdoorPropName(n)) return false;
-            if (IsExcludedStructureName(n)) return false;
-
             if (n.Contains("hangar") || n.Contains("building") || n.Contains("warehouse")
                 || n.Contains("office") || n.Contains("shed") || n.Contains("hall")
                 || n.Contains("structure") || n.Contains("roof") || n.Contains("ceiling")
-                || n.Contains("wall") || n.Contains("concrete_wall"))
+                || n.Contains("wall") || n.Contains("concrete_wall") || n.Contains("module")
+                || n.Contains("interior") || n.Contains("kit"))
                 return true;
         }
-
         return false;
     }
 

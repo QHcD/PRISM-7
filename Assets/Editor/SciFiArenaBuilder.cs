@@ -3,8 +3,11 @@ using System.Collections.Generic;
 using System.IO;
 using Unity.AI.Navigation;
 using UnityEditor;
+using UnityEditor.Build;
+using UnityEditor.Build.Reporting;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
 
 /// <summary>
@@ -23,7 +26,7 @@ public static class SciFiArenaBuilder
     private const string VersionFile = OutputDir + "/.builder_version";
 
     // Bump when layout/content meaningfully changes — forces auto-rebuild.
-    private const int BuilderVersion = 24;
+    private const int BuilderVersion = 25;
 
     private const float ModuleSize = 6f;
     private const int GridSize = 9;            // 54m x 54m arena
@@ -37,6 +40,8 @@ public static class SciFiArenaBuilder
     {
         EditorApplication.delayCall -= AutoBuildIfMissing;
         EditorApplication.delayCall += AutoBuildIfMissing;
+        EditorApplication.playModeStateChanged -= OnPlayModeStateChanged;
+        EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
     }
 
     private static void AutoBuildIfMissing()
@@ -45,13 +50,45 @@ public static class SciFiArenaBuilder
         if (EditorApplication.isPlayingOrWillChangePlaymode) return;
         if (EditorApplication.isCompiling || EditorApplication.isUpdating) return;
 
-        bool prefabExists = File.Exists(OutputPrefab);
-        bool versionMatches = false;
-        if (File.Exists(VersionFile) && int.TryParse(File.ReadAllText(VersionFile).Trim(), out int v))
-            versionMatches = v == BuilderVersion;
-        if (prefabExists && versionMatches) return;
+        if (IsPrefabCurrentAndValid()) return;
 
         BuildArenaPrefab();
+    }
+
+    public static bool EnsurePrefabReady()
+    {
+        if (Application.isPlaying)
+            return IsPrefabCurrentAndValid();
+        if (EditorApplication.isCompiling || EditorApplication.isUpdating)
+            return IsPrefabCurrentAndValid();
+        if (!IsPrefabCurrentAndValid())
+            BuildArenaPrefab();
+        return IsPrefabCurrentAndValid();
+    }
+
+    private static void OnPlayModeStateChanged(PlayModeStateChange state)
+    {
+        if (state != PlayModeStateChange.ExitingEditMode) return;
+        if (IsPrefabCurrentAndValid()) return;
+
+        EditorApplication.isPlaying = false;
+        EditorApplication.delayCall += () =>
+        {
+            if (!EditorApplication.isPlayingOrWillChangePlaymode)
+                EnsurePrefabReady();
+        };
+        Debug.LogError("[SciFiArenaBuilder] SciFiArena prefab was invalid. Play Mode was stopped while the prefab rebuild runs outside Play Mode.");
+    }
+
+    private sealed class SciFiArenaBuildPreprocessor : IPreprocessBuildWithReport
+    {
+        public int callbackOrder => -1000;
+
+        public void OnPreprocessBuild(BuildReport report)
+        {
+            if (!EnsurePrefabReady())
+                throw new BuildFailedException("SciFiArena prefab failed validation before player build.");
+        }
     }
 
     private sealed class KitRefs
@@ -382,7 +419,8 @@ public static class SciFiArenaBuilder
 
             CleanupCopiedDemoHierarchy(root);
             AlignWarehouseRootToGrid(modules);
-            EnsureWarehouseColliders(root.transform);
+            if (!EnforceWarehousePrefabPipeline(root.transform))
+                return false;
             MarkWarehouseStatic(root.transform);
             int proxyCount = BuildNavMeshProxyColliders(root.transform, modules);
             if (proxyCount <= 0)
@@ -394,6 +432,11 @@ public static class SciFiArenaBuilder
             Transform spawns = MakeChild(root.transform, "SpawnPoints");
             BuildSpawnPoints(spawns, modules);
             AddNavMeshSurface(root);
+            if (!ValidateWarehousePrefab(root.transform, out string validationError))
+            {
+                Debug.LogError("[SciFiArenaBuilder] Build aborted: " + validationError);
+                return false;
+            }
             LogSciFiArenaValidation(root.transform, modules, root.transform.Find("SciFiNavMeshProxyColliders"), spawns.Find("PlayerSpawn"));
 
             savedPrefab = PrefabUtility.SaveAsPrefabAsset(root, OutputPrefab);
@@ -597,6 +640,29 @@ public static class SciFiArenaBuilder
         return hasBounds;
     }
 
+    private static bool EnforceWarehousePrefabPipeline(Transform root)
+    {
+        EnsureHierarchyActive(root);
+        EnsureWarehouseColliders(root);
+        EnforceDoubleSidedWallAndRoofMaterials(root);
+        WakeAndBakeWarehouseColliders(root);
+        if (!ValidateWarehouseColliderCoverage(root, out string validationError))
+        {
+            Debug.LogError("[SciFiArenaBuilder] Collider validation failed: " + validationError);
+            return false;
+        }
+        return true;
+    }
+
+    private static void EnsureHierarchyActive(Transform root)
+    {
+        if (root == null) return;
+        Transform[] all = root.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < all.Length; i++)
+            if (all[i] != null)
+                all[i].gameObject.SetActive(true);
+    }
+
     private static void EnsureWarehouseColliders(Transform root)
     {
         MeshCollider[] existingMeshColliders = root.GetComponentsInChildren<MeshCollider>(true);
@@ -616,28 +682,263 @@ public static class SciFiArenaBuilder
                 box = go.AddComponent<BoxCollider>();
             box.center = center;
             box.size = size;
+            box.enabled = true;
+            box.isTrigger = false;
         }
 
         MeshFilter[] meshes = root.GetComponentsInChildren<MeshFilter>(true);
         for (int i = 0; i < meshes.Length; i++)
         {
             MeshFilter mf = meshes[i];
-            if (mf == null || mf.sharedMesh == null || mf.GetComponent<Collider>() != null)
+            if (mf == null || mf.sharedMesh == null)
                 continue;
+
+            Collider existing = mf.GetComponent<Collider>();
+            if (existing is MeshCollider existingMesh)
+            {
+                if (existingMesh.sharedMesh == null)
+                    existingMesh.sharedMesh = mf.sharedMesh;
+                existingMesh.convex = false;
+                existingMesh.enabled = true;
+                existingMesh.isTrigger = false;
+                continue;
+            }
+
+            if (existing is BoxCollider existingBox)
+            {
+                if (existingBox.size == Vector3.zero)
+                    existingBox.size = mf.sharedMesh.bounds.size;
+                existingBox.enabled = true;
+                existingBox.isTrigger = false;
+                continue;
+            }
+
+            if (existing != null)
+            {
+                Object.DestroyImmediate(existing);
+            }
 
             if (mf.sharedMesh.isReadable)
             {
                 MeshCollider mc = mf.gameObject.AddComponent<MeshCollider>();
                 mc.sharedMesh = mf.sharedMesh;
                 mc.convex = false;
+                mc.enabled = true;
+                mc.isTrigger = false;
             }
             else
             {
                 BoxCollider box = mf.gameObject.AddComponent<BoxCollider>();
                 box.center = mf.sharedMesh.bounds.center;
                 box.size = mf.sharedMesh.bounds.size;
+                box.enabled = true;
+                box.isTrigger = false;
             }
         }
+    }
+
+    private static void EnforceDoubleSidedWallAndRoofMaterials(Transform root)
+    {
+        if (root == null) return;
+        Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer renderer = renderers[i];
+            if (renderer == null || renderer is ParticleSystemRenderer || renderer is TrailRenderer || renderer is LineRenderer)
+                continue;
+            if (!IsWallOrRoofSegment(renderer.transform))
+                continue;
+
+            Material[] materials = renderer.sharedMaterials;
+            bool changed = false;
+            for (int m = 0; m < materials.Length; m++)
+            {
+                Material mat = materials[m];
+                if (!CanForceDoubleSided(mat))
+                    continue;
+                if (mat.HasProperty("_Cull"))
+                {
+                    mat.SetFloat("_Cull", (float)CullMode.Off);
+                    changed = true;
+                }
+                if (mat.HasProperty("_CullMode"))
+                {
+                    mat.SetFloat("_CullMode", (float)CullMode.Off);
+                    changed = true;
+                }
+                if (mat.HasProperty("_DoubleSidedEnable"))
+                {
+                    mat.SetFloat("_DoubleSidedEnable", 1f);
+                    changed = true;
+                }
+                mat.doubleSidedGI = true;
+                EditorUtility.SetDirty(mat);
+            }
+            if (changed)
+                EditorUtility.SetDirty(renderer);
+        }
+    }
+
+    private static bool CanForceDoubleSided(Material mat)
+    {
+        if (mat == null) return false;
+        if (mat.renderQueue >= (int)RenderQueue.AlphaTest) return false;
+        if (mat.HasProperty("_Surface") && mat.GetFloat("_Surface") > 0.5f) return false;
+        if (mat.HasProperty("_AlphaClip") && mat.GetFloat("_AlphaClip") > 0.5f) return false;
+        if (mat.HasProperty("_Mode") && mat.GetFloat("_Mode") >= 1f) return false;
+        string name = mat.name.ToLowerInvariant();
+        return !name.Contains("glass") && !name.Contains("fence") && !name.Contains("grid") && !name.Contains("wire");
+    }
+
+    private static void WakeAndBakeWarehouseColliders(Transform root)
+    {
+        if (root == null) return;
+        Collider[] colliders = root.GetComponentsInChildren<Collider>(true);
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider col = colliders[i];
+            if (col == null) continue;
+            col.gameObject.SetActive(true);
+            col.enabled = true;
+            col.isTrigger = false;
+            MeshCollider meshCollider = col as MeshCollider;
+            if (meshCollider != null && meshCollider.sharedMesh != null)
+                Physics.BakeMesh(meshCollider.sharedMesh.GetInstanceID(), false);
+        }
+    }
+
+    private static bool IsPrefabCurrentAndValid()
+    {
+        if (!File.Exists(OutputPrefab)) return false;
+        if (!File.Exists(VersionFile)) return false;
+        if (!int.TryParse(File.ReadAllText(VersionFile).Trim(), out int v) || v != BuilderVersion) return false;
+        GameObject root = null;
+        try
+        {
+            root = PrefabUtility.LoadPrefabContents(OutputPrefab);
+            return root != null && ValidateWarehousePrefab(root.transform, out _);
+        }
+        finally
+        {
+            if (root != null)
+                PrefabUtility.UnloadPrefabContents(root);
+        }
+    }
+
+    private static bool ValidateWarehousePrefab(Transform root, out string error)
+    {
+        error = null;
+        if (root == null)
+        {
+            error = "missing prefab root";
+            return false;
+        }
+        Transform modules = root.Find("DemoWarehouseModules");
+        if (modules == null)
+        {
+            error = "missing DemoWarehouseModules";
+            return false;
+        }
+        if (!ValidateWarehouseColliderCoverage(modules, out error))
+            return false;
+        Transform proxyRoot = root.Find("SciFiNavMeshProxyColliders");
+        if (proxyRoot == null)
+        {
+            error = "missing SciFiNavMeshProxyColliders";
+            return false;
+        }
+        BoxCollider[] boxes = proxyRoot.GetComponentsInChildren<BoxCollider>(true);
+        int activeBoxes = 0;
+        for (int i = 0; i < boxes.Length; i++)
+            if (boxes[i] != null && boxes[i].enabled && !boxes[i].isTrigger && boxes[i].gameObject.activeInHierarchy)
+                activeBoxes++;
+        if (activeBoxes <= 0)
+        {
+            error = "no active NavMesh proxy BoxColliders";
+            return false;
+        }
+        return true;
+    }
+
+    private static bool ValidateWarehouseColliderCoverage(Transform root, out string error)
+    {
+        error = null;
+        if (root == null)
+        {
+            error = "missing warehouse root";
+            return false;
+        }
+        MeshFilter[] filters = root.GetComponentsInChildren<MeshFilter>(true);
+        int required = 0;
+        for (int i = 0; i < filters.Length; i++)
+        {
+            MeshFilter mf = filters[i];
+            if (mf == null || mf.sharedMesh == null)
+                continue;
+            if (!IsColliderRequiredWarehouseModule(mf.transform))
+                continue;
+            required++;
+            if (!HasActiveMeshOrBoxCollider(mf.gameObject))
+            {
+                error = "missing active MeshCollider or BoxCollider on " + GetHierarchyPath(mf.transform);
+                return false;
+            }
+        }
+        if (required <= 0)
+        {
+            error = "no floor, catwalk, or wall modules were detected";
+            return false;
+        }
+        return true;
+    }
+
+    private static bool HasActiveMeshOrBoxCollider(GameObject go)
+    {
+        if (go == null || !go.activeInHierarchy) return false;
+        Collider[] colliders = go.GetComponents<Collider>();
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider col = colliders[i];
+            if (col == null || !col.enabled || col.isTrigger)
+                continue;
+            MeshCollider meshCollider = col as MeshCollider;
+            if (meshCollider != null && meshCollider.sharedMesh != null)
+                return true;
+            if (col is BoxCollider)
+                return true;
+        }
+        return false;
+    }
+
+    private static bool IsColliderRequiredWarehouseModule(Transform transform)
+    {
+        for (Transform t = transform; t != null; t = t.parent)
+        {
+            string n = t.name.ToLowerInvariant();
+            if (n.Contains("floor") || n.Contains("catwalk") || n.Contains("wall"))
+                return !n.Contains("light") && !n.Contains("decal") && !n.Contains("sign");
+        }
+        return false;
+    }
+
+    private static bool IsWallOrRoofSegment(Transform transform)
+    {
+        for (Transform t = transform; t != null; t = t.parent)
+        {
+            string n = t.name.ToLowerInvariant();
+            if (n.Contains("wall") || n.Contains("roof") || n.Contains("ceiling"))
+                return true;
+        }
+        return false;
+    }
+
+    private static string GetHierarchyPath(Transform transform)
+    {
+        if (transform == null) return string.Empty;
+        string path = transform.name;
+        for (Transform p = transform.parent; p != null; p = p.parent)
+            path = p.name + "/" + path;
+        return path;
     }
 
     private static int BuildNavMeshProxyColliders(Transform root, Transform warehouseRoot)

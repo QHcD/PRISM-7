@@ -210,6 +210,8 @@ public class CameraController : MonoBehaviour
 
     private void HandleSceneLoaded(UnityEngine.SceneManagement.Scene scene, UnityEngine.SceneManagement.LoadSceneMode mode)
     {
+        target = null;
+        _lookTargetInitialized = false;
         ResolvePlayerTarget();
         Camera cam = GetComponent<Camera>();
         if (cam != null)
@@ -223,15 +225,25 @@ public class CameraController : MonoBehaviour
 
     private IEnumerator FrameEndAuthoritativeSnap()
     {
-        yield return null;
-        ResolvePlayerTarget();
-        ScrubOrphanCameras();
-        if (target != null)
-            SnapToTarget();
+        for (int attempt = 0; attempt < 5; attempt++)
+        {
+            yield return null;
+            if (target == null) ResolvePlayerTarget();
+            if (target != null)
+            {
+                _lookTargetInitialized = false;
+                ScrubOrphanCameras();
+                SnapToTarget();
+                break;
+            }
+        }
         yield return new WaitForEndOfFrame();
-        ResolvePlayerTarget();
+        if (target == null) ResolvePlayerTarget();
         if (target != null)
+        {
+            _lookTargetInitialized = false;
             SnapToTarget();
+        }
     }
 
     private void ScrubOrphanCameras()

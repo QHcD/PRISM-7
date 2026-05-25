@@ -1,3 +1,4 @@
+using System.Collections;
 using UnityEngine;
 
 /// <summary>
@@ -6,20 +7,36 @@ using UnityEngine;
 /// </summary>
 public class LevelSetup : MonoBehaviour
 {
-    public Vector3 fallbackSpawn = new Vector3(0f, 1f, 0f);
     public PlayerController player;
     public Camera gameplayCamera;
 
-    private void Start()
+    private IEnumerator Start()
+    {
+        if (Application.isPlaying && LevelBuilder.Instance != null)
+        {
+            float deadline = Time.realtimeSinceStartup + 12f;
+            while (!LevelBuilder.IsRuntimeLevelReady && Time.realtimeSinceStartup < deadline)
+                yield return null;
+            if (!LevelBuilder.IsRuntimeLevelReady)
+            {
+                Debug.LogError("[LevelSetup] Setup halted until LevelBuilder reports a valid runtime NavMesh.");
+                yield break;
+            }
+        }
+
+        RunSetup();
+    }
+
+    private void RunSetup()
     {
         try
         {
             EnsurePlayer();
             EnsureCamera();
             EnsureGroundVisible();
-        StabilizeEnvironment();
-        StabilizeSceneStructures();
-        DestroyHeavyLevelProps();
+            StabilizeEnvironment();
+            StabilizeSceneStructures();
+            DestroyHeavyLevelProps();
             ForceFallbackSpawnIfNeeded();
             TryInitializeOptionalAISystems();
         }
@@ -44,9 +61,6 @@ public class LevelSetup : MonoBehaviour
 
         if (!player.CompareTag("Player"))
             player.tag = "Player";
-
-        if (player.GetComponent<CharacterController>() == null)
-            player.gameObject.AddComponent<CharacterController>();
 
         if (player.GetComponent<PlayerHealth>() == null)
             player.gameObject.AddComponent<PlayerHealth>();
@@ -89,8 +103,11 @@ public class LevelSetup : MonoBehaviour
             || float.IsNaN(position.z)
             || position.y < -0.5f;
 
-        if (unsafePosition || position.y < fallbackSpawn.y)
-            player.TeleportTo(fallbackSpawn);
+        if (!unsafePosition && (!LevelInteriorSpawnResolver.RequiresInteriorSpawn || LevelInteriorSpawnResolver.IsValidInteriorPosition(position)))
+            return;
+
+        if (LevelInteriorSpawnResolver.TryResolveSceneSpawn(player, out Vector3 spawn))
+            LevelInteriorSpawnResolver.ApplyExternalSpawn(player, spawn);
     }
 
     private void EnsureGroundVisible()
@@ -163,7 +180,7 @@ public class LevelSetup : MonoBehaviour
 
     private void StabilizeSceneStructures()
     {
-        string[] mapRootNames = { "FbxMap", "IndustrialMap", "IndustrialMap_v3", "IndustrialMap_v3_small" };
+        string[] mapRootNames = { "FbxMap", "IndustrialMap", "IndustrialMap_v3", "IndustrialMap_v3_small", "SciFiArena", "SciFiArena(Clone)" };
         for (int i = 0; i < mapRootNames.Length; i++)
         {
             GameObject mapRoot = GameObject.Find(mapRootNames[i]);

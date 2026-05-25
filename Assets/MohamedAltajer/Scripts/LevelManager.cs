@@ -16,6 +16,7 @@ public class LevelManager : MonoBehaviour
 
     private static LevelManager _instance;
     private Coroutine _spawnWatchdog;
+    private Coroutine _sceneSafetyRoutine;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
     private static void Initialize()
@@ -56,21 +57,47 @@ public class LevelManager : MonoBehaviour
     private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
     {
         StopSpawnWatchdog();
-        StabilizeEnvironment();
 
         if (!Application.isPlaying) return;
         if (scene.name == MainMenuSceneName) return;
 
-        _spawnWatchdog = StartCoroutine(SpawnSafetyWatchdog());
+        if (_sceneSafetyRoutine != null)
+            StopCoroutine(_sceneSafetyRoutine);
+        _sceneSafetyRoutine = StartCoroutine(SceneSafetySequence());
     }
 
     private void StopSpawnWatchdog()
     {
+        if (_sceneSafetyRoutine != null)
+        {
+            StopCoroutine(_sceneSafetyRoutine);
+            _sceneSafetyRoutine = null;
+        }
         if (_spawnWatchdog != null)
         {
             StopCoroutine(_spawnWatchdog);
             _spawnWatchdog = null;
         }
+    }
+
+    private IEnumerator SceneSafetySequence()
+    {
+        if (LevelBuilder.Instance != null)
+        {
+            float deadline = Time.realtimeSinceStartup + WatchdogDurationSeconds;
+            while (!LevelBuilder.IsRuntimeLevelReady && Time.realtimeSinceStartup < deadline)
+                yield return null;
+            if (!LevelBuilder.IsRuntimeLevelReady)
+            {
+                Debug.LogError("[LevelManager] Spawn watchdog halted until LevelBuilder reports a valid runtime NavMesh.");
+                _sceneSafetyRoutine = null;
+                yield break;
+            }
+        }
+
+        StabilizeEnvironment();
+        _spawnWatchdog = StartCoroutine(SpawnSafetyWatchdog());
+        _sceneSafetyRoutine = null;
     }
 
     private IEnumerator SpawnSafetyWatchdog()
@@ -99,10 +126,25 @@ public class LevelManager : MonoBehaviour
         bool nanPosition = float.IsNaN(pos.x) || float.IsNaN(pos.y) || float.IsNaN(pos.z);
         bool belowVoid = !nanPosition && pos.y < VoidYThreshold;
 
+        if (LevelInteriorSpawnResolver.RequiresInteriorSpawn)
+        {
+            if (!nanPosition && LevelInteriorSpawnResolver.IsValidInteriorPosition(pos))
+                return false;
+
+            if (LevelInteriorSpawnResolver.TryResolveInteriorSpawn(player, out Vector3 interiorTarget))
+            {
+                LevelInteriorSpawnResolver.ApplyExternalSpawn(player, interiorTarget);
+                return true;
+            }
+
+            return false;
+        }
+
         if (!nanPosition && !belowVoid && HasGroundDirectlyBelow(pos))
             return false;
 
-        Vector3 safeTarget = ResolveSafeSpawnTarget();
+        if (!TryResolveSafeSpawnTarget(out Vector3 safeTarget))
+            return false;
         player.TeleportTo(safeTarget);
         Physics.SyncTransforms();
         return true;
@@ -120,12 +162,15 @@ public class LevelManager : MonoBehaviour
             QueryTriggerInteraction.Ignore);
     }
 
-    private static Vector3 ResolveSafeSpawnTarget()
+    private static bool TryResolveSafeSpawnTarget(out Vector3 target)
     {
+        target = default;
         Transform marker = LocateActivePlayerSpawnMarker();
-        if (marker != null)
-            return marker.position + Vector3.up * SafeRespawnLiftY;
-        return new Vector3(0f, 1f + SafeRespawnLiftY, 0f);
+        if (marker == null)
+            return false;
+
+        target = marker.position + Vector3.up * SafeRespawnLiftY;
+        return true;
     }
 
     private static Transform LocateActivePlayerSpawnMarker()
@@ -154,37 +199,38 @@ public class LevelManager : MonoBehaviour
         int mapLayer = LayerMask.NameToLayer("Map");
 
         Transform[] allTransforms = Object.FindObjectsByType<Transform>(FindObjectsSortMode.None);
-        
         int count = 0;
+
         foreach (Transform t in allTransforms)
         {
             GameObject obj = t.gameObject;
-            
-            // Check if object belongs to Environment or Map layer, or has Environment tag
+
             bool isEnvironment = false;
             if (envLayer >= 0 && obj.layer == envLayer) isEnvironment = true;
             if (mapLayer >= 0 && obj.layer == mapLayer) isEnvironment = true;
             if (obj.CompareTag("Environment") || obj.CompareTag("Map")) isEnvironment = true;
 
-            if (isEnvironment)
-            {
-                // Skip if it is part of a character/damageable entity
-                if (obj.GetComponentInParent<IDamageable>() != null) continue;
+            if (!isEnvironment) continue;
+            if (obj.GetComponentInParent<IDamageable>() != null) continue;
 
-                // Make object static
-                obj.isStatic = true;
-                
-                // Remove Rigidbody to prevent the floor/walls from falling
-                Rigidbody rb = obj.GetComponent<Rigidbody>();
-                if (rb != null)
-                {
-                    Destroy(rb);
-                }
-                
-                count++;
+            obj.isStatic = true;
+
+            Rigidbody rb = obj.GetComponent<Rigidbody>();
+            if (rb != null) Destroy(rb);
+
+            Collider[] cols = obj.GetComponents<Collider>();
+            for (int i = 0; i < cols.Length; i++)
+            {
+                if (!cols[i].enabled) cols[i].enabled = true;
+                MeshCollider mc = cols[i] as MeshCollider;
+                if (mc != null && mc.sharedMesh != null)
+                    Physics.BakeMesh(mc.sharedMesh.GetInstanceID(), false);
             }
+
+            count++;
         }
-        
-        Debug.Log($"[LevelManager] Programmatic Scene Cleanup: Stabilized {count} environment objects (isStatic = true, Rigidbody removed).");
+
+        Physics.SyncTransforms();
+        Debug.Log($"[LevelManager] StabilizeEnvironment: {count} environment objects locked and colliders baked.");
     }
 }

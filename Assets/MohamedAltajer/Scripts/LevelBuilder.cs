@@ -1,3 +1,4 @@
+using System.Collections;
 using Unity.AI.Navigation;
 using UnityEngine;
 using UnityEngine.AI;
@@ -21,6 +22,9 @@ public class LevelBuilder : MonoBehaviour
     private static readonly Vector3 SafeFallbackSpawn = new Vector3(0f, 1f, 0f);
     private static LevelBuilder instance;
     private bool _navMeshReady;
+    private bool _runtimeBuildInProgress;
+    private bool _runtimeInitializationComplete;
+    private Coroutine _buildRoutine;
     private Bounds _assembledWarehouseBounds;
     private bool _hasAssembledWarehouseBounds;
     private Bounds _sciFiProxyBounds;
@@ -101,6 +105,9 @@ public class LevelBuilder : MonoBehaviour
 
     // Public accessor so scene-local fallback can reach us.
     public static LevelBuilder Instance => instance;
+    public static bool IsRuntimeBuildInProgress => instance != null && instance._runtimeBuildInProgress;
+    public static bool IsRuntimeLevelReady => instance != null && instance._runtimeInitializationComplete;
+    public static bool IsRuntimeNavMeshReady => instance != null && instance._navMeshReady;
 
     private void OnEnable()
     {
@@ -333,8 +340,11 @@ public class LevelBuilder : MonoBehaviour
 
         if (scene.name == "GameScene")
         {
-            Debug.Log("[LevelBuilder] Building GameScene (synchronous)...");
-            BuildGameScene();
+            Debug.Log("[LevelBuilder] Building GameScene...");
+            if (Application.isPlaying)
+                StartRuntimeGameSceneBuild();
+            else
+                BuildGameScene();
         }
         else if (scene.name == MultiplayerMode.MultiplayerSceneName)
         {
@@ -355,7 +365,10 @@ public class LevelBuilder : MonoBehaviour
         {
             _lastBuiltFrame = Time.frameCount;
             Debug.Log("[LevelBuilder] TriggerBuild called from scene-local fallback.");
-            BuildGameScene();
+            if (Application.isPlaying)
+                StartRuntimeGameSceneBuild();
+            else
+                BuildGameScene();
         }
         else if (active.name == MultiplayerMode.MultiplayerSceneName)
         {
@@ -410,8 +423,21 @@ public class LevelBuilder : MonoBehaviour
     private void BuildGameScene()
     {
         Debug.Log("[LevelBuilder] ===== BUILD START =====");
+        if (Application.isPlaying)
+        {
+            _runtimeBuildInProgress = true;
+            _runtimeInitializationComplete = false;
+            _navMeshReady = false;
+        }
         try
         {
+#if UNITY_EDITOR
+            if (useSciFiArena && !Application.isPlaying && !EnsureSciFiArenaPrefabReadyInEditor())
+            {
+                Debug.LogError("[LevelBuilder] SciFiArena prefab validation failed before GameScene build.");
+                return;
+            }
+#endif
             EnsureGameManager();
             Debug.Log("[LevelBuilder] Step 1: GameManager ensured");
 
@@ -454,7 +480,15 @@ public class LevelBuilder : MonoBehaviour
             if (!useSciFiArena)
                 StabilizeGround(arenaRoot);
             EnsureIndustrialDoorsInteractable(arenaRoot);
-            Debug.Log("[LevelBuilder] Step 3: Arena built + floor stabilised");
+            bool geometryReady = WakeAndVerifyEnvironmentColliders(arenaRoot);
+            Debug.Log(geometryReady
+                ? "[LevelBuilder] Step 3: Arena built + colliders verified"
+                : "[LevelBuilder] Step 3: Arena collider verification failed");
+            if (Application.isPlaying && !geometryReady)
+            {
+                AbortRuntimeInitialization("[LevelBuilder] Runtime initialization aborted: environment colliders are not valid.");
+                return;
+            }
 
             // Environmental props are provided by the RPG/FPS industrial map prefab — skip procedural spawning.
             Debug.Log("[LevelBuilder] Step 4: Props skipped (industrial map provides own environment)");
@@ -462,10 +496,54 @@ public class LevelBuilder : MonoBehaviour
             EnsureMinimapCamera();
             Debug.Log("[LevelBuilder] Step 5: Minimap camera");
 
+            if (Application.isPlaying)
+            {
+                _buildRoutine = StartCoroutine(CompleteRuntimeInitialization(enemyRoot));
+                return;
+            }
+
+            CompleteEnvironmentInitialization(enemyRoot);
+        }
+        catch (System.Exception e)
+        {
+            string errorMsg = $"[LevelBuilder] BUILD FAILED: {e.GetType().Name}: {e.Message}\n{e.StackTrace}";
+            Debug.LogWarning(errorMsg);
+            // Also write to file so we can read it even if console logs are unreachable
+            try { System.IO.File.WriteAllText(Application.dataPath + "/../build_error.log", errorMsg); }
+            catch { }
+            if (Application.isPlaying)
+                AbortRuntimeInitialization("[LevelBuilder] Runtime initialization aborted after build exception.");
+        }
+    }
+
+    private void StartRuntimeGameSceneBuild()
+    {
+        if (_buildRoutine != null)
+            StopCoroutine(_buildRoutine);
+        BuildGameScene();
+    }
+
+    private IEnumerator CompleteRuntimeInitialization(Transform enemyRoot)
+    {
+        yield return new WaitForFixedUpdate();
+        CompleteEnvironmentInitialization(enemyRoot);
+        _buildRoutine = null;
+    }
+
+    private void CompleteEnvironmentInitialization(Transform enemyRoot)
+    {
+        try
+        {
             _navMeshReady = Application.isPlaying && TryBuildNavMesh();
             Debug.Log(_navMeshReady
                 ? "[LevelBuilder] Step 6: NavMesh built"
                 : "[LevelBuilder] Step 6: NavMesh skipped; enemy spawning requires valid NavMesh");
+
+            if (Application.isPlaying && !_navMeshReady)
+            {
+                AbortRuntimeInitialization("[LevelBuilder] Runtime initialization halted: NavMesh is not ready.");
+                return;
+            }
 
             ConfigurePlayer();
             Debug.Log("[LevelBuilder] Step 7: Player configured");
@@ -479,6 +557,8 @@ public class LevelBuilder : MonoBehaviour
             ResetRuntimeUiAnchors();
             EnsurePauseMenu();
             int spawnedSummary = GameManager.Instance != null ? GameManager.Instance.enemiesRemaining : 0;
+            _runtimeInitializationComplete = !Application.isPlaying || _navMeshReady;
+            _runtimeBuildInProgress = false;
             Debug.Log($"[StabilizationSummary] missingScriptsRemoved=editor-generated-scan NavMeshRebuilt={_navMeshReady} " +
                       $"NavMeshCoverage={EstimateNavMeshCoverageArea():F1}m2 spawnAnchorsValid={spawnedSummary > 0} " +
                       $"runtimeSystemsRemoved=UniversalCeilingSealer/ducts/beams/patch-ceilings " +
@@ -487,13 +567,46 @@ public class LevelBuilder : MonoBehaviour
         }
         catch (System.Exception e)
         {
-            string errorMsg = $"[LevelBuilder] BUILD FAILED: {e.GetType().Name}: {e.Message}\n{e.StackTrace}";
-            Debug.LogWarning(errorMsg);
-            // Also write to file so we can read it even if console logs are unreachable
-            try { System.IO.File.WriteAllText(Application.dataPath + "/../build_error.log", errorMsg); }
-            catch { }
+            Debug.LogWarning($"[LevelBuilder] Runtime initialization failed: {e.GetType().Name}: {e.Message}\n{e.StackTrace}");
+            AbortRuntimeInitialization("[LevelBuilder] Runtime initialization aborted after finalization exception.");
         }
     }
+
+    private void AbortRuntimeInitialization(string message)
+    {
+        Debug.LogError(message);
+        _navMeshReady = false;
+        _runtimeInitializationComplete = false;
+        _runtimeBuildInProgress = false;
+        _buildRoutine = null;
+        if (GameManager.Instance != null)
+            GameManager.Instance.InitializeEnemyCount(0);
+    }
+
+#if UNITY_EDITOR
+    private static bool EnsureSciFiArenaPrefabReadyInEditor()
+    {
+        try
+        {
+            System.Type builderType = System.Type.GetType("SciFiArenaBuilder, Assembly-CSharp-Editor")
+                ?? System.Type.GetType("SciFiArenaBuilder");
+            if (builderType == null)
+                return true;
+            System.Reflection.MethodInfo method = builderType.GetMethod(
+                "EnsurePrefabReady",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+            if (method == null)
+                return true;
+            object result = method.Invoke(null, null);
+            return result is bool ready && ready;
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError("[LevelBuilder] SciFiArena prefab validation failed: " + e.Message);
+            return false;
+        }
+    }
+#endif
 
     private void CleanupMainMenu()
     {
@@ -1009,7 +1122,11 @@ public class LevelBuilder : MonoBehaviour
             t.gameObject.SetActive(true);
 
         foreach (Renderer rend in mapInstance.GetComponentsInChildren<Renderer>(true))
+        {
             rend.enabled = true;
+            rend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
+            rend.receiveShadows = true;
+        }
 
         if (useSciFiArena)
             ConfigureSciFiWarehouseAssembly(mapInstance.transform);
@@ -1068,11 +1185,8 @@ public class LevelBuilder : MonoBehaviour
             MapAttachedPropsPreserver.Restore(mapInstance.transform);
         }
 
-        if (!useSciFiArena)
-        {
-            MapStructureStabilizer.Install(mapInstance.transform, debugArenaVisualBounds || debugSpawnValidation);
-            MapVisibilityStabilizer.Install(mapInstance.transform, debugArenaVisualBounds || debugSpawnValidation);
-        }
+        MapStructureStabilizer.Install(mapInstance.transform, debugArenaVisualBounds || debugSpawnValidation);
+        MapVisibilityStabilizer.Install(mapInstance.transform, debugArenaVisualBounds || debugSpawnValidation);
 
         if (!useSciFiArena)
         {
@@ -1130,7 +1244,218 @@ public class LevelBuilder : MonoBehaviour
             _hasSciFiProxyBounds = true;
         arenaHalfSize = Mathf.Max(bounds.extents.x, bounds.extents.z) + 1f;
 
+        SnapWarehouseModulesToGrid(boundsRoot);
+        BrandWarehouseStaticAndGI(mapRoot);
+        AnchorWarehouseLightFixtures(mapRoot);
+
         Debug.Log($"[LevelBuilder] SciFi warehouse final bounds center={bounds.center} size={bounds.size} walkableGroundY={(hasWalkableGround ? groundBounds.min.y : bounds.min.y):F2} arenaHalfSize={arenaHalfSize:F1}");
+    }
+
+    private bool WakeAndVerifyEnvironmentColliders(Transform root)
+    {
+        if (root == null) return false;
+
+        Transform[] transforms = root.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < transforms.Length; i++)
+            if (transforms[i] != null)
+                transforms[i].gameObject.SetActive(true);
+
+        if (useSciFiArena)
+            EnsureRuntimeWarehouseColliders(root);
+
+        Collider[] colliders = root.GetComponentsInChildren<Collider>(true);
+        int activeColliders = 0;
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider col = colliders[i];
+            if (col == null) continue;
+            if (col.GetComponentInParent<IDamageable>() != null) continue;
+            col.gameObject.SetActive(true);
+            col.enabled = true;
+            if (IsRuntimeColliderRequiredModule(col.transform))
+                col.isTrigger = false;
+            MeshCollider meshCollider = col as MeshCollider;
+            if (meshCollider != null && meshCollider.sharedMesh != null)
+                Physics.BakeMesh(meshCollider.sharedMesh.GetInstanceID(), false);
+            if (!col.isTrigger)
+                activeColliders++;
+        }
+
+        MeshFilter[] filters = root.GetComponentsInChildren<MeshFilter>(true);
+        int required = 0;
+        for (int i = 0; i < filters.Length; i++)
+        {
+            MeshFilter mf = filters[i];
+            if (mf == null || mf.sharedMesh == null) continue;
+            if (!IsRuntimeColliderRequiredModule(mf.transform)) continue;
+            required++;
+            if (!HasActiveMeshOrBoxCollider(mf.gameObject))
+            {
+                Debug.LogError("[LevelBuilder] Required environment collider missing on " + GetHierarchyPath(mf.transform));
+                Physics.SyncTransforms();
+                return false;
+            }
+        }
+
+        Physics.SyncTransforms();
+        return activeColliders > 0 && (required > 0 || !useSciFiArena);
+    }
+
+    private static void EnsureRuntimeWarehouseColliders(Transform root)
+    {
+        MeshFilter[] filters = root.GetComponentsInChildren<MeshFilter>(true);
+        for (int i = 0; i < filters.Length; i++)
+        {
+            MeshFilter mf = filters[i];
+            if (mf == null || mf.sharedMesh == null) continue;
+            if (!IsRuntimeColliderRequiredModule(mf.transform)) continue;
+            EnsureMeshOrBoxCollider(mf);
+        }
+    }
+
+    private static void EnsureMeshOrBoxCollider(MeshFilter mf)
+    {
+        if (mf == null || mf.sharedMesh == null) return;
+
+        Collider[] colliders = mf.GetComponents<Collider>();
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider col = colliders[i];
+            if (col == null) continue;
+            MeshCollider meshCollider = col as MeshCollider;
+            if (meshCollider != null)
+            {
+                if (meshCollider.sharedMesh == null)
+                    meshCollider.sharedMesh = mf.sharedMesh;
+                meshCollider.convex = false;
+                meshCollider.enabled = true;
+                meshCollider.isTrigger = false;
+                return;
+            }
+            BoxCollider boxCollider = col as BoxCollider;
+            if (boxCollider != null)
+            {
+                if (boxCollider.size == Vector3.zero)
+                    boxCollider.size = mf.sharedMesh.bounds.size;
+                boxCollider.enabled = true;
+                boxCollider.isTrigger = false;
+                return;
+            }
+        }
+
+        if (mf.sharedMesh.isReadable)
+        {
+            MeshCollider meshCollider = mf.gameObject.AddComponent<MeshCollider>();
+            meshCollider.sharedMesh = mf.sharedMesh;
+            meshCollider.convex = false;
+            meshCollider.enabled = true;
+            meshCollider.isTrigger = false;
+        }
+        else
+        {
+            BoxCollider boxCollider = mf.gameObject.AddComponent<BoxCollider>();
+            boxCollider.center = mf.sharedMesh.bounds.center;
+            boxCollider.size = mf.sharedMesh.bounds.size;
+            boxCollider.enabled = true;
+            boxCollider.isTrigger = false;
+        }
+    }
+
+    private static bool HasActiveMeshOrBoxCollider(GameObject go)
+    {
+        if (go == null || !go.activeInHierarchy) return false;
+        Collider[] colliders = go.GetComponents<Collider>();
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider col = colliders[i];
+            if (col == null || !col.enabled || col.isTrigger) continue;
+            MeshCollider meshCollider = col as MeshCollider;
+            if (meshCollider != null && meshCollider.sharedMesh != null) return true;
+            if (col is BoxCollider) return true;
+        }
+        return false;
+    }
+
+    private static bool IsRuntimeColliderRequiredModule(Transform transform)
+    {
+        for (Transform t = transform; t != null; t = t.parent)
+        {
+            string n = t.name.ToLowerInvariant();
+            if (n.Contains("light") || n.Contains("decal") || n.Contains("sign") || n.Contains("particle"))
+                return false;
+            if (n.Contains("floor") || n.Contains("catwalk") || n.Contains("wall"))
+                return true;
+        }
+        return false;
+    }
+
+    private static string GetHierarchyPath(Transform transform)
+    {
+        if (transform == null) return string.Empty;
+        string path = transform.name;
+        for (Transform p = transform.parent; p != null; p = p.parent)
+            path = p.name + "/" + path;
+        return path;
+    }
+
+    private static void SnapWarehouseModulesToGrid(Transform root)
+    {
+        const float GridUnit = 1f;
+        if (root == null) return;
+        Transform modules = root.Find("DemoWarehouseModules") ?? root;
+        for (int i = 0; i < modules.childCount; i++)
+        {
+            Transform module = modules.GetChild(i);
+            if (module == null || module.GetComponentInParent<IDamageable>() != null) continue;
+            Vector3 p = module.localPosition;
+            p.x = Mathf.Round(p.x / GridUnit) * GridUnit;
+            p.y = Mathf.Round(p.y / GridUnit) * GridUnit;
+            p.z = Mathf.Round(p.z / GridUnit) * GridUnit;
+            module.localPosition = p;
+            Vector3 e = module.localEulerAngles;
+            e.x = Mathf.Round(e.x / 90f) * 90f;
+            e.y = Mathf.Round(e.y / 90f) * 90f;
+            e.z = Mathf.Round(e.z / 90f) * 90f;
+            module.localEulerAngles = e;
+        }
+    }
+
+    private static void BrandWarehouseStaticAndGI(Transform root)
+    {
+        if (root == null) return;
+        Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            if (renderers[i] == null) continue;
+            if (renderers[i].GetComponentInParent<IDamageable>() != null) continue;
+            renderers[i].gameObject.isStatic = true;
+            renderers[i].staticShadowCaster = true;
+#if UNITY_EDITOR
+            var current = UnityEditor.GameObjectUtility.GetStaticEditorFlags(renderers[i].gameObject);
+            UnityEditor.GameObjectUtility.SetStaticEditorFlags(
+                renderers[i].gameObject,
+                current
+                | UnityEditor.StaticEditorFlags.ContributeGI
+                | UnityEditor.StaticEditorFlags.BatchingStatic);
+#endif
+        }
+    }
+
+    private static void AnchorWarehouseLightFixtures(Transform root)
+    {
+        if (root == null) return;
+        Light[] lights = root.GetComponentsInChildren<Light>(true);
+        for (int i = 0; i < lights.Length; i++)
+        {
+            Light l = lights[i];
+            if (l == null) continue;
+            l.gameObject.SetActive(true);
+            if (l.type != LightType.Point && l.type != LightType.Spot) continue;
+            l.transform.localPosition = new Vector3(0f, -0.1f, 0f);
+            l.shadows = LightShadows.Soft;
+            l.shadowStrength = 0.75f;
+            if (l.range < 8f) l.range = 8f;
+        }
     }
 
     private static bool TryComputeColliderBounds(Transform root, out Bounds bounds)
@@ -2703,30 +3028,40 @@ public class LevelBuilder : MonoBehaviour
         // Assign the Hittable layer so deterministic melee never scans scenery.
         SetLayerRecursive(playerController.gameObject, ResolveHittableLayer());
 
-        CharacterController cc = playerController.GetComponent<CharacterController>();
-
-        // Match runtime capsule before computing spawn — resizing after TeleportTo
-        // was leaving the feet underground until the player jumped.
-        if (cc != null)
-        {
-            cc.center = new Vector3(0f, 1f, 0f);
-            cc.height = 2f;
-            cc.radius = 0.4f;
-        }
-
-        // ── Street-only spawn (real map roads — never backfill / under buildings) ──
         Transform fbxMap = GameObject.Find("FbxMap")?.transform;
         if (fbxMap != null && !useSciFiArena)
             EnemySpawnGeometry.RefreshStreetSpawnAnchors(fbxMap);
 
-        Vector3 safeSpawn = FindValidatedPlayerSpawnPoint(SafeFallbackSpawn, playerController);
+        bool interiorSpawn = LevelInteriorSpawnResolver.RequiresInteriorSpawn;
+        Vector3 safeSpawn;
+        if (interiorSpawn)
+        {
+            if (!LevelInteriorSpawnResolver.TryResolveInteriorSpawn(playerController, out safeSpawn))
+            {
+                Debug.LogError("[LevelBuilder] Player spawn failed: no validated interior floor target was found.");
+                return;
+            }
+        }
+        else
+        {
+            safeSpawn = FindValidatedPlayerSpawnPoint(SafeFallbackSpawn, playerController);
+        }
+
         if (useSciFiArena)
             SetSciFiPlayerSpawnMarker(safeSpawn);
         Debug.Log($"[LevelBuilder] Player spawn: {safeSpawn} (navMeshReady={_navMeshReady})");
 
-        playerController.TeleportTo(safeSpawn);
-        playerController.transform.rotation = Quaternion.identity;
-        playerController.SnapCapsuleToWalkableGround();
+        if (interiorSpawn)
+        {
+            LevelInteriorSpawnResolver.ApplyExternalSpawn(playerController, safeSpawn);
+            playerController.transform.rotation = Quaternion.identity;
+        }
+        else
+        {
+            playerController.TeleportTo(safeSpawn);
+            playerController.transform.rotation = Quaternion.identity;
+            playerController.SnapCapsuleToWalkableGround();
+        }
         Physics.SyncTransforms();
 
         EnsureComponent<PlayerHealth>(playerController.gameObject);
@@ -2852,6 +3187,9 @@ public class LevelBuilder : MonoBehaviour
             return diagnostics;
         }
 
+        if (TryComputeColliderBounds(proxyRoot, out _sciFiProxyBounds))
+            _hasSciFiProxyBounds = true;
+
         CountSciFiProxySources(proxyRoot, ref diagnostics);
 
         if (diagnostics.sources == 0)
@@ -2918,9 +3256,10 @@ public class LevelBuilder : MonoBehaviour
                 MarkNavMeshWalkability();
             Debug.Log("[AINav] runtime NavMesh build started");
             if (useSciFiArena)
-                BuildSciFiNavMeshFromProxyColliders(navMeshSurface.transform);
-            else
-                navMeshSurface.BuildNavMesh();
+                _sciFiNavMeshDataInstance.Remove();
+            navMeshSurface.BuildNavMesh();
+            if (useSciFiArena)
+                ClampSciFiSpawnMarkersToNavMesh(navMeshSurface.transform);
             float navArea = EstimateNavMeshCoverageArea();
             bool ready = navArea > 20f && HasAnyNavMeshNearArena();
             Debug.Log("[AINav] runtime NavMesh build completed");
@@ -3753,23 +4092,6 @@ public class LevelBuilder : MonoBehaviour
                 if (TryIndoorNavMeshSpawn(boundedSeeds[i], capsuleCenterLocal, radius, height, mask, out feet))
                     return true;
             }
-        }
-
-        // 4) Sweep a small set of origin-centered candidates for older prefabs.
-        Vector3[] seeds =
-        {
-            new Vector3(0f, 1f, -6f),
-            new Vector3(0f, 1f,  0f),
-            new Vector3(0f, 1f,  6f),
-            new Vector3(-4f, 1f, -2f),
-            new Vector3( 4f, 1f,  2f),
-            new Vector3(-6f, 1f,  4f),
-            new Vector3( 6f, 1f, -4f),
-        };
-        for (int i = 0; i < seeds.Length; i++)
-        {
-            if (TryIndoorNavMeshSpawn(seeds[i], capsuleCenterLocal, radius, height, mask, out feet))
-                return true;
         }
 
         return false;
