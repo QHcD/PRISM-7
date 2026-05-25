@@ -1278,7 +1278,7 @@ public static class SciFiArenaBuilder
         d.leftPanel = left.transform;
         d.rightPanel = right.transform;
         d.panelSlide = slide;
-        d.interactiveToggle = true;
+        d.interactiveToggle = false;
     }
 
     // ---------------- Interior Room Walls ----------------
@@ -1955,10 +1955,25 @@ public static class SciFiArenaBuilder
 
     private static void BuildSpawnPoints(Transform parent)
     {
-        // Player spawn — central hall, south end (faces north toward the main fight).
-        GameObject player = new GameObject("PlayerSpawn");
-        player.transform.SetParent(parent, false);
-        player.transform.localPosition = new Vector3(0f, 1f, -6f);
+        Vector3[] playerPositions =
+        {
+            new Vector3(0f, 1f, 0f),
+            new Vector3(0f, 1f, -6f),
+            new Vector3(0f, 1f, 6f),
+            new Vector3(-6f, 1f, 0f),
+            new Vector3(6f, 1f, 0f),
+            new Vector3(-6f, 1f, -6f),
+            new Vector3(6f, 1f, -6f),
+            new Vector3(-6f, 1f, 6f),
+            new Vector3(6f, 1f, 6f)
+        };
+
+        for (int i = 0; i < playerPositions.Length; i++)
+        {
+            GameObject player = new GameObject(i == 0 ? "PlayerSpawn" : $"PlayerSpawn_{i:00}");
+            player.transform.SetParent(parent, false);
+            player.transform.localPosition = playerPositions[i];
+        }
 
         // 16 enemy spawns spread across hall + each room interior.
         Vector3[] enemyPositions =
@@ -2017,9 +2032,25 @@ public static class SciFiArenaBuilder
         float zMid = SnapToGrid(spawnBounds.center.z);
         float y = spawnBounds.min.y + 1f;
 
-        GameObject player = new GameObject("PlayerSpawn");
-        player.transform.SetParent(parent, false);
-        player.transform.localPosition = parent.InverseTransformPoint(new Vector3(xMid, y, SnapToGrid(Mathf.Lerp(zMin, zMid, 0.5f))));
+        Vector3[] playerPositions =
+        {
+            new Vector3(xMid, y, zMid),
+            new Vector3(xMid, y, SnapToGrid(Mathf.Lerp(zMin, zMid, 0.5f))),
+            new Vector3(xMid, y, SnapToGrid(Mathf.Lerp(zMax, zMid, 0.5f))),
+            new Vector3(SnapToGrid(Mathf.Lerp(xMin, xMid, 0.5f)), y, zMid),
+            new Vector3(SnapToGrid(Mathf.Lerp(xMax, xMid, 0.5f)), y, zMid),
+            new Vector3(SnapToGrid(Mathf.Lerp(xMin, xMid, 0.5f)), y, SnapToGrid(Mathf.Lerp(zMin, zMid, 0.5f))),
+            new Vector3(SnapToGrid(Mathf.Lerp(xMax, xMid, 0.5f)), y, SnapToGrid(Mathf.Lerp(zMin, zMid, 0.5f))),
+            new Vector3(SnapToGrid(Mathf.Lerp(xMin, xMid, 0.5f)), y, SnapToGrid(Mathf.Lerp(zMax, zMid, 0.5f))),
+            new Vector3(SnapToGrid(Mathf.Lerp(xMax, xMid, 0.5f)), y, SnapToGrid(Mathf.Lerp(zMax, zMid, 0.5f)))
+        };
+
+        for (int i = 0; i < playerPositions.Length; i++)
+        {
+            GameObject player = new GameObject(i == 0 ? "PlayerSpawn" : $"PlayerSpawn_{i:00}");
+            player.transform.SetParent(parent, false);
+            player.transform.localPosition = parent.InverseTransformPoint(playerPositions[i]);
+        }
 
         Vector3[] enemyPositions =
         {

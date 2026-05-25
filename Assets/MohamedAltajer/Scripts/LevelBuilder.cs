@@ -22,6 +22,7 @@ public class LevelBuilder : MonoBehaviour
     private static readonly Vector3 SafeFallbackSpawn = new Vector3(0f, 1f, 0f);
     private static LevelBuilder instance;
     private bool _navMeshReady;
+    private bool _playerSpawnReady;
     private bool _runtimeBuildInProgress;
     private bool _runtimeInitializationComplete;
     private Coroutine _buildRoutine;
@@ -57,6 +58,7 @@ public class LevelBuilder : MonoBehaviour
 
     private void Awake()
     {
+        UseSharedSciFiEnvironment();
         if (instance != null && instance != this)
         {
             DestroyObjectSafe(gameObject);
@@ -380,6 +382,7 @@ public class LevelBuilder : MonoBehaviour
 
     private void BuildMultiplayerScene()
     {
+        UseSharedSciFiEnvironment();
         _multiplayerBuildComplete = false;
         try
         {
@@ -422,12 +425,14 @@ public class LevelBuilder : MonoBehaviour
     /// </summary>
     private void BuildGameScene()
     {
+        UseSharedSciFiEnvironment();
         Debug.Log("[LevelBuilder] ===== BUILD START =====");
         if (Application.isPlaying)
         {
             _runtimeBuildInProgress = true;
             _runtimeInitializationComplete = false;
             _navMeshReady = false;
+            _playerSpawnReady = false;
         }
         try
         {
@@ -440,6 +445,10 @@ public class LevelBuilder : MonoBehaviour
 #endif
             EnsureGameManager();
             Debug.Log("[LevelBuilder] Step 1: GameManager ensured");
+            if (GameManager.Instance != null)
+                GameManager.Instance.InitializeEnemyCount(0);
+            if (Application.isPlaying && useSciFiArena)
+                SetExistingPlayersActive(false);
 
             GameManager manager = GameManager.Instance;
             if (manager != null)
@@ -451,6 +460,7 @@ public class LevelBuilder : MonoBehaviour
             // scene (fixes the "old map still visible in Editor" bug).
             ClearExistingLevel();
             CleanupGeneratedRuntimeObjects();
+            DisableSciFiExteriorFallbacks();
 
             Transform gameplayRoot = GetOrCreateRoot(GameplayRootName);
             Transform arenaRoot    = GetOrCreateChildRoot(gameplayRoot, ArenaRootName);
@@ -476,6 +486,7 @@ public class LevelBuilder : MonoBehaviour
             }
 
             BuildArena(arenaRoot);
+            DisableSciFiExteriorFallbacks();
             // EnsureSceneGroundVisible skipped — industrial map has its own ground
             if (!useSciFiArena)
                 StabilizeGround(arenaRoot);
@@ -519,29 +530,59 @@ public class LevelBuilder : MonoBehaviour
     private void StartRuntimeGameSceneBuild()
     {
         if (_buildRoutine != null)
+        {
             StopCoroutine(_buildRoutine);
+            _buildRoutine = null;
+        }
+        PrepareRuntimeNavMeshRestart();
         BuildGameScene();
     }
 
     private IEnumerator CompleteRuntimeInitialization(Transform enemyRoot)
     {
         yield return new WaitForFixedUpdate();
+        yield return WaitForSciFiArenaCoreReady();
+        yield return BuildRuntimeNavMeshWhenSettled();
         CompleteEnvironmentInitialization(enemyRoot);
         _buildRoutine = null;
+    }
+
+    private IEnumerator WaitForSciFiArenaCoreReady()
+    {
+        if (!useSciFiArena)
+            yield break;
+
+        const float TimeoutSeconds = 5f;
+        float deadline = Time.realtimeSinceStartup + TimeoutSeconds;
+        while (Time.realtimeSinceStartup < deadline)
+        {
+            if (IsSciFiArenaCoreReady())
+                yield break;
+            yield return null;
+        }
+
+        Debug.LogWarning("[SciFiSpawn] SciFiArena core was not ready before NavMesh build window.");
     }
 
     private void CompleteEnvironmentInitialization(Transform enemyRoot)
     {
         try
         {
-            _navMeshReady = Application.isPlaying && TryBuildNavMesh();
+            if (!Application.isPlaying)
+                _navMeshReady = false;
             Debug.Log(_navMeshReady
                 ? "[LevelBuilder] Step 6: NavMesh built"
                 : "[LevelBuilder] Step 6: NavMesh skipped; enemy spawning requires valid NavMesh");
 
-            if (Application.isPlaying && !_navMeshReady)
+            if (useSciFiArena && !_navMeshReady)
             {
-                AbortRuntimeInitialization("[LevelBuilder] Runtime initialization halted: NavMesh is not ready.");
+                _playerSpawnReady = false;
+                SetExistingPlayersActive(false);
+                if (GameManager.Instance != null)
+                    GameManager.Instance.InitializeEnemyCount(0);
+                _runtimeInitializationComplete = true;
+                _runtimeBuildInProgress = false;
+                Debug.LogError("[SciFiSpawn] player spawn blocked until SciFiArena NavMesh is valid.");
                 return;
             }
 
@@ -549,7 +590,14 @@ public class LevelBuilder : MonoBehaviour
             Debug.Log("[LevelBuilder] Step 7: Player configured");
 
             TryInitializeOptionalAISystems();
-            SpawnEnemies(enemyRoot);
+            if (_navMeshReady && _playerSpawnReady)
+            {
+                SpawnEnemies(enemyRoot);
+            }
+            else if (GameManager.Instance != null)
+            {
+                GameManager.Instance.InitializeEnemyCount(0);
+            }
             Debug.Log("[LevelBuilder] Step 8: Enemies spawned: " +
                 (GameManager.Instance != null ? GameManager.Instance.enemiesRemaining.ToString() : "?"));
 
@@ -557,19 +605,119 @@ public class LevelBuilder : MonoBehaviour
             ResetRuntimeUiAnchors();
             EnsurePauseMenu();
             int spawnedSummary = GameManager.Instance != null ? GameManager.Instance.enemiesRemaining : 0;
-            _runtimeInitializationComplete = !Application.isPlaying || _navMeshReady;
+            VerifyPlayerInsideArena();
+            _runtimeInitializationComplete = true;
             _runtimeBuildInProgress = false;
-            Debug.Log($"[StabilizationSummary] missingScriptsRemoved=editor-generated-scan NavMeshRebuilt={_navMeshReady} " +
+            Debug.Log($"[StabilizationSummary] NavMeshRebuilt={_navMeshReady} " +
                       $"NavMeshCoverage={EstimateNavMeshCoverageArea():F1}m2 spawnAnchorsValid={spawnedSummary > 0} " +
-                      $"runtimeSystemsRemoved=UniversalCeilingSealer/ducts/beams/patch-ceilings " +
-                      $"generatedRoot={GameplayRootName} enemiesSpawned={spawnedSummary}");
+                      $"enemiesSpawned={spawnedSummary}");
             Debug.Log("[LevelBuilder] ===== BUILD COMPLETE =====");
         }
         catch (System.Exception e)
         {
             Debug.LogWarning($"[LevelBuilder] Runtime initialization failed: {e.GetType().Name}: {e.Message}\n{e.StackTrace}");
-            AbortRuntimeInitialization("[LevelBuilder] Runtime initialization aborted after finalization exception.");
+            _runtimeInitializationComplete = true;
+            _runtimeBuildInProgress = false;
+            if (GameManager.Instance != null)
+                GameManager.Instance.InitializeEnemyCount(0);
         }
+    }
+
+    private bool IsSciFiArenaCoreReady()
+    {
+        if (!useSciFiArena)
+            return true;
+
+        Transform mapRoot = GameObject.Find("FbxMap")?.transform;
+        if (mapRoot == null || !mapRoot.gameObject.activeInHierarchy)
+            return false;
+
+        Transform floorRoot = FindSciFiFloorRoot(mapRoot);
+        if (floorRoot == null)
+            return false;
+
+        Collider[] colliders = floorRoot.GetComponentsInChildren<Collider>(false);
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider collider = colliders[i];
+            if (collider == null || !collider.enabled || collider.isTrigger)
+                continue;
+            if (collider.bounds.size.x < 0.5f || collider.bounds.size.z < 0.5f)
+                continue;
+            return true;
+        }
+
+        Transform proxyRoot = mapRoot.Find("SciFiNavMeshProxyColliders");
+        if (proxyRoot == null)
+            return false;
+
+        Collider[] proxyColliders = proxyRoot.GetComponentsInChildren<Collider>(false);
+        for (int i = 0; i < proxyColliders.Length; i++)
+        {
+            Collider collider = proxyColliders[i];
+            if (collider != null && collider.enabled && !collider.isTrigger)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static Transform FindSciFiFloorRoot(Transform mapRoot)
+    {
+        if (mapRoot == null)
+            return null;
+
+        Transform direct = mapRoot.Find("Floors");
+        if (direct != null)
+            return direct;
+
+        Transform[] all = mapRoot.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < all.Length; i++)
+        {
+            Transform t = all[i];
+            if (t == null) continue;
+            string n = t.name.ToLowerInvariant();
+            if (n == "floors" || n.Contains("floors & floor props") || n == "floor tiles")
+                return t;
+        }
+
+        return null;
+    }
+
+    private IEnumerator BuildRuntimeNavMeshWhenSettled()
+    {
+        _navMeshReady = false;
+        _playerSpawnReady = false;
+        yield return null;
+        yield return new WaitForFixedUpdate();
+
+        const int MaxAttempts = 8;
+        for (int attempt = 0; attempt < MaxAttempts; attempt++)
+        {
+            _navMeshReady = TryBuildNavMesh();
+            if (_navMeshReady && IsRuntimeNavMeshValid())
+                yield break;
+            yield return new WaitForSecondsRealtime(0.1f);
+        }
+
+        _navMeshReady = IsRuntimeNavMeshValid();
+        if (!_navMeshReady)
+            Debug.LogWarning("[LevelBuilder] Runtime NavMesh is not ready after restart retry window; player and enemy spawning remain blocked.");
+    }
+
+    private void PrepareRuntimeNavMeshRestart()
+    {
+        _navMeshReady = false;
+        _playerSpawnReady = false;
+        _runtimeInitializationComplete = false;
+        _runtimeBuildInProgress = false;
+        _lastNavSourceDiagnostics = default;
+        LevelInteriorSpawnResolver.ResetDiagnostics();
+        if (useSciFiArena)
+            SetExistingPlayersActive(false);
+        _sciFiNavMeshDataInstance.Remove();
+        if (Application.isPlaying)
+            NavMesh.RemoveAllNavMeshData();
     }
 
     private void AbortRuntimeInitialization(string message)
@@ -661,7 +809,7 @@ public class LevelBuilder : MonoBehaviour
 
             door.openOnStart         = false;
             door.openOnPlayerTrigger = false;
-            door.interactiveToggle   = true;
+            door.interactiveToggle   = false;
             // Don't hide door visuals — keep mesh visible; only disable
             // colliders so characters can pass through.
             passThrough.hideOnOpen    = false;
@@ -729,6 +877,7 @@ public class LevelBuilder : MonoBehaviour
 
     private void BuildArena(Transform arenaRoot)
     {
+        UseSharedSciFiEnvironment();
         GameManager.ArenaMap map = GameManager.Instance != null
             ? GameManager.Instance.GetSelectedMap()
             : GameManager.ArenaMap.Map1;
@@ -986,6 +1135,7 @@ public class LevelBuilder : MonoBehaviour
     /// <summary>Loads the active arena prefab from Resources and places it as visual geometry.</summary>
     private void LoadFbxMap(Transform parent, GameManager.ArenaMap map)
     {
+        UseSharedSciFiEnvironment();
         EnemySpawnGeometry.AllowEnclosedArena = useSciFiArena;
 
         string resourcePath = useSciFiArena
@@ -1024,6 +1174,7 @@ public class LevelBuilder : MonoBehaviour
         if (useSciFiArena)
         {
             ConfigureSciFiWarehouseAssembly(mapInstance.transform);
+            EnsureSciFiIndoorPlayerSpawnMarkers(mapInstance.transform);
         }
         else
         {
@@ -1198,6 +1349,54 @@ public class LevelBuilder : MonoBehaviour
         Debug.Log($"[LevelBuilder] Industrial map loaded and fully activated: {resourcePath}");
     }
 
+    private void UseSharedSciFiEnvironment()
+    {
+        useSciFiArena = true;
+        EnemySpawnGeometry.AllowEnclosedArena = true;
+    }
+
+    private static void DisableSciFiExteriorFallbacks()
+    {
+        string[] exteriorNames =
+        {
+            "Plane",
+            "Ground",
+            "ground",
+            "PhysicsFloor",
+            "Ground_PhysicsFloor",
+            "ArenaFloor",
+            "VisibleGround_Fallback",
+            "ArenaVisualClosure",
+            "ArenaEdgeBlockers",
+            "WorldArenaStabilizer"
+        };
+
+        int disabled = 0;
+        GameObject[] all = Object.FindObjectsByType<GameObject>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+        for (int i = 0; i < all.Length; i++)
+        {
+            GameObject obj = all[i];
+            if (obj == null) continue;
+            if (!IsNamedGeneratedRoot(obj.name, exteriorNames)) continue;
+            if (IsInsideSciFiArenaHierarchy(obj.transform)) continue;
+            DestroyObjectSafe(obj);
+            disabled++;
+        }
+
+        RenderSettings.skybox = null;
+        Debug.Log($"[SciFiFix] disabled exterior void objects count={disabled}");
+    }
+
+    private static bool IsInsideSciFiArenaHierarchy(Transform transform)
+    {
+        for (Transform t = transform; t != null; t = t.parent)
+        {
+            if (t.name == "FbxMap" || t.name == "SciFiArena" || t.name == "SciFiArena(Clone)")
+                return true;
+        }
+        return false;
+    }
+
     private void ConfigureSciFiWarehouseAssembly(Transform mapRoot)
     {
         _hasAssembledWarehouseBounds = false;
@@ -1251,6 +1450,77 @@ public class LevelBuilder : MonoBehaviour
         Debug.Log($"[LevelBuilder] SciFi warehouse final bounds center={bounds.center} size={bounds.size} walkableGroundY={(hasWalkableGround ? groundBounds.min.y : bounds.min.y):F2} arenaHalfSize={arenaHalfSize:F1}");
     }
 
+    private void EnsureSciFiIndoorPlayerSpawnMarkers(Transform mapRoot)
+    {
+        if (!useSciFiArena || mapRoot == null)
+            return;
+
+        Vector3[] seeds = BuildSciFiIndoorPlayerSpawnSeeds();
+        if (seeds.Length == 0)
+            return;
+
+        Transform spawnRoot = mapRoot.Find("SpawnPoints");
+        if (spawnRoot == null)
+        {
+            GameObject root = new GameObject("SpawnPoints");
+            spawnRoot = root.transform;
+            spawnRoot.SetParent(mapRoot, false);
+        }
+
+        for (int i = spawnRoot.childCount - 1; i >= 0; i--)
+        {
+            Transform child = spawnRoot.GetChild(i);
+            if (child != null && child.name.StartsWith("PlayerSpawn", System.StringComparison.OrdinalIgnoreCase))
+                DestroyObjectSafe(child.gameObject);
+        }
+
+        for (int i = 0; i < seeds.Length; i++)
+        {
+            GameObject marker = new GameObject(i == 0 ? "PlayerSpawn" : $"PlayerSpawn_{i:00}");
+            marker.transform.SetParent(spawnRoot, false);
+            marker.transform.position = seeds[i];
+        }
+
+        Debug.Log($"[SciFiFix] indoor player spawn markers={seeds.Length} center={seeds[0]}");
+    }
+
+    private Vector3[] BuildSciFiIndoorPlayerSpawnSeeds()
+    {
+        Bounds bounds;
+        if (_hasSciFiProxyBounds)
+            bounds = _sciFiProxyBounds;
+        else if (_hasAssembledWarehouseBounds)
+            bounds = _assembledWarehouseBounds;
+        else
+            return System.Array.Empty<Vector3>();
+
+        float y = bounds.min.y + 1f;
+        Vector3 c = bounds.center;
+        float x = Mathf.Clamp(bounds.extents.x * 0.22f, 4f, 12f);
+        float z = Mathf.Clamp(bounds.extents.z * 0.22f, 4f, 12f);
+        float x2 = Mathf.Clamp(bounds.extents.x * 0.34f, 6f, 18f);
+        float z2 = Mathf.Clamp(bounds.extents.z * 0.34f, 6f, 18f);
+
+        return new[]
+        {
+            new Vector3(c.x, y, c.z),
+            new Vector3(c.x, y, c.z - z),
+            new Vector3(c.x, y, c.z + z),
+            new Vector3(c.x - x, y, c.z),
+            new Vector3(c.x + x, y, c.z),
+            new Vector3(c.x - x, y, c.z - z),
+            new Vector3(c.x + x, y, c.z - z),
+            new Vector3(c.x - x, y, c.z + z),
+            new Vector3(c.x + x, y, c.z + z),
+            new Vector3(c.x - x2, y, c.z),
+            new Vector3(c.x + x2, y, c.z),
+            new Vector3(c.x, y, c.z - z2),
+            new Vector3(c.x, y, c.z + z2),
+            new Vector3(c.x, y + 3f, c.z),
+            new Vector3(c.x, y + 3f, c.z - z)
+        };
+    }
+
     private bool WakeAndVerifyEnvironmentColliders(Transform root)
     {
         if (root == null) return false;
@@ -1261,7 +1531,15 @@ public class LevelBuilder : MonoBehaviour
                 transforms[i].gameObject.SetActive(true);
 
         if (useSciFiArena)
+        {
+            int disabledDecorative = DisableSciFiDecorativeColliders(root);
+            Debug.Log($"[SciFiFix] disabled decorative colliders count={disabledDecorative}");
             EnsureRuntimeWarehouseColliders(root);
+            int disabledOversized = DisableOversizedSciFiBlockerColliders(root);
+            Debug.Log($"[SciFiFix] disabled oversized blocker colliders count={disabledOversized}");
+            EnsureTraversalNavMeshLinks(root);
+            EnsureSciFiDoorSystems(root);
+        }
 
         Collider[] colliders = root.GetComponentsInChildren<Collider>(true);
         int activeColliders = 0;
@@ -1270,6 +1548,16 @@ public class LevelBuilder : MonoBehaviour
             Collider col = colliders[i];
             if (col == null) continue;
             if (col.GetComponentInParent<IDamageable>() != null) continue;
+            if (useSciFiArena && IsDecorativeColliderModule(col.transform))
+            {
+                col.enabled = false;
+                continue;
+            }
+            if (useSciFiArena && IsOversizedSciFiBlockerCollider(col))
+            {
+                col.enabled = false;
+                continue;
+            }
             col.gameObject.SetActive(true);
             col.enabled = true;
             if (IsRuntimeColliderRequiredModule(col.transform))
@@ -1308,9 +1596,153 @@ public class LevelBuilder : MonoBehaviour
         {
             MeshFilter mf = filters[i];
             if (mf == null || mf.sharedMesh == null) continue;
+            if (IsLocomotionTraversalModule(mf.transform))
+            {
+                EnsureConvexMeshCollider(mf);
+                continue;
+            }
             if (!IsRuntimeColliderRequiredModule(mf.transform)) continue;
             EnsureMeshOrBoxCollider(mf);
         }
+    }
+
+    private static int DisableSciFiDecorativeColliders(Transform root)
+    {
+        if (root == null) return 0;
+        Collider[] colliders = root.GetComponentsInChildren<Collider>(true);
+        int disabled = 0;
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider collider = colliders[i];
+            if (collider == null || collider.isTrigger || !collider.enabled)
+                continue;
+            if (!IsDecorativeColliderModule(collider.transform))
+                continue;
+            collider.enabled = false;
+            disabled++;
+        }
+        return disabled;
+    }
+
+    private static int DisableOversizedSciFiBlockerColliders(Transform root)
+    {
+        if (root == null) return 0;
+
+        Collider[] colliders = root.GetComponentsInChildren<Collider>(true);
+        int disabled = 0;
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider collider = colliders[i];
+            if (collider == null || collider.isTrigger || !collider.enabled)
+                continue;
+            if (!IsOversizedSciFiBlockerCollider(collider))
+                continue;
+
+            collider.enabled = false;
+            disabled++;
+        }
+
+        return disabled;
+    }
+
+    private static void EnsureSciFiDoorSystems(Transform root)
+    {
+        if (root == null) return;
+        SciFiSlidingDoor[] doors = root.GetComponentsInChildren<SciFiSlidingDoor>(true);
+        Debug.Log($"[SciFiDoor] EnsureSciFiDoorSystems found {doors.Length} doors under {root.name}");
+        for (int i = 0; i < doors.Length; i++)
+        {
+            SciFiSlidingDoor door = doors[i];
+            if (door == null) continue;
+            door.interactiveToggle = false;
+            door.gameObject.SetActive(true);
+
+            Rigidbody rb = door.GetComponent<Rigidbody>();
+            if (rb == null)
+                rb = door.gameObject.AddComponent<Rigidbody>();
+            rb.isKinematic = true;
+            rb.useGravity = false;
+
+            Collider[] colliders = door.GetComponents<Collider>();
+            bool hasTrigger = false;
+            for (int c = 0; c < colliders.Length; c++)
+            {
+                if (colliders[c] == null) continue;
+                colliders[c].isTrigger = true;
+                colliders[c].enabled = true;
+                hasTrigger = true;
+            }
+            if (!hasTrigger)
+            {
+                SphereCollider trigger = door.gameObject.AddComponent<SphereCollider>();
+                trigger.isTrigger = true;
+                trigger.radius = door.interactRange;
+            }
+            Debug.Log($"[SciFiDoor] door={door.name} hasTrigger={hasTrigger} rb={rb != null} pos={door.transform.position}");
+        }
+    }
+
+    private static void EnsureTraversalNavMeshLinks(Transform root)
+    {
+        if (root == null) return;
+        MeshFilter[] filters = root.GetComponentsInChildren<MeshFilter>(true);
+        for (int i = 0; i < filters.Length; i++)
+        {
+            MeshFilter mf = filters[i];
+            if (mf == null || mf.sharedMesh == null) continue;
+            if (!IsStairOrRampModule(mf.transform)) continue;
+
+            NavMeshLink link = mf.GetComponentInChildren<NavMeshLink>(true);
+            if (link == null)
+            {
+                GameObject linkObject = new GameObject("SciFiTraversalNavMeshLink");
+                linkObject.transform.SetParent(mf.transform, false);
+                link = linkObject.AddComponent<NavMeshLink>();
+            }
+
+            Bounds b = mf.GetComponent<Renderer>() != null ? mf.GetComponent<Renderer>().bounds : new Bounds(mf.transform.position, mf.sharedMesh.bounds.size);
+            Vector3 axis = b.size.x >= b.size.z ? Vector3.right : Vector3.forward;
+            Vector3 start = b.center - axis * Mathf.Max(0.5f, Mathf.Max(b.size.x, b.size.z) * 0.45f);
+            Vector3 end = b.center + axis * Mathf.Max(0.5f, Mathf.Max(b.size.x, b.size.z) * 0.45f);
+            start.y = b.min.y + 0.08f;
+            end.y = b.max.y + 0.08f;
+
+            link.startPoint = link.transform.InverseTransformPoint(start);
+            link.endPoint = link.transform.InverseTransformPoint(end);
+            link.width = Mathf.Max(0.8f, Mathf.Min(b.size.x, b.size.z) * 0.7f);
+            link.bidirectional = true;
+            link.area = 0;
+        }
+    }
+
+    private static void EnsureConvexMeshCollider(MeshFilter mf)
+    {
+        if (mf == null || mf.sharedMesh == null) return;
+
+        MeshCollider[] meshColliders = mf.GetComponents<MeshCollider>();
+        MeshCollider target = null;
+        for (int i = 0; i < meshColliders.Length; i++)
+        {
+            MeshCollider collider = meshColliders[i];
+            if (collider == null) continue;
+            if (target == null)
+                target = collider;
+            collider.sharedMesh = mf.sharedMesh;
+            collider.convex = true;
+            collider.enabled = true;
+            collider.isTrigger = false;
+        }
+
+        if (target == null)
+        {
+            target = mf.gameObject.AddComponent<MeshCollider>();
+            target.sharedMesh = mf.sharedMesh;
+            target.convex = true;
+            target.enabled = true;
+            target.isTrigger = false;
+        }
+
+        Physics.BakeMesh(mf.sharedMesh.GetInstanceID(), true);
     }
 
     private static void EnsureMeshOrBoxCollider(MeshFilter mf)
@@ -1378,12 +1810,120 @@ public class LevelBuilder : MonoBehaviour
 
     private static bool IsRuntimeColliderRequiredModule(Transform transform)
     {
+        if (IsDecorativeColliderModule(transform))
+            return false;
+
         for (Transform t = transform; t != null; t = t.parent)
         {
             string n = t.name.ToLowerInvariant();
             if (n.Contains("light") || n.Contains("decal") || n.Contains("sign") || n.Contains("particle"))
                 return false;
             if (n.Contains("floor") || n.Contains("catwalk") || n.Contains("wall"))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool IsLocomotionTraversalModule(Transform transform)
+    {
+        for (Transform t = transform; t != null; t = t.parent)
+        {
+            string n = t.name.ToLowerInvariant();
+            if (n.Contains("stair") || n.Contains("step") || n.Contains("ramp")
+                || n.Contains("walkway") || n.Contains("catwalk"))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool IsStairOrRampModule(Transform transform)
+    {
+        for (Transform t = transform; t != null; t = t.parent)
+        {
+            string n = t.name.ToLowerInvariant();
+            if (n.Contains("stair") || n.Contains("step") || n.Contains("ramp"))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool IsDecorativeColliderModule(Transform transform)
+    {
+        for (Transform t = transform; t != null; t = t.parent)
+        {
+            string n = t.name.ToLowerInvariant();
+            if (n.Contains("door") || n.Contains("trigger") || n.Contains("navmeshproxy"))
+                return false;
+            if (n.Contains("floor") || n.Contains("wall") || n.Contains("stair")
+                || n.Contains("step") || n.Contains("ramp") || n.Contains("walkway")
+                || n.Contains("catwalk") || n.Contains("platform"))
+                return false;
+            if (n.Contains("rail") || n.Contains("railing") || n.Contains("pipe")
+                || n.Contains("cable") || n.Contains("duct") || n.Contains("vent")
+                || n.Contains("light") || n.Contains("beam") || n.Contains("shelf")
+                || n.Contains("crate") || n.Contains("barrel") || n.Contains("pallet")
+                || n.Contains("sprinkler") || n.Contains("camera") || n.Contains("sign")
+                || n.Contains("panel") || n.Contains("fuse") || n.Contains("cart")
+                || n.Contains("bin") || n.Contains("ext"))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool IsOversizedSciFiBlockerCollider(Collider collider)
+    {
+        if (collider == null || collider.isTrigger)
+            return false;
+        if (IsRuntimeColliderRequiredModule(collider.transform))
+            return false;
+        if (IsSciFiNavMeshProxy(collider.transform))
+            return false;
+        if (collider.GetComponentInParent<IDamageable>() != null)
+            return false;
+
+        BoxCollider box = collider as BoxCollider;
+        if (box == null)
+            return false;
+
+        Renderer[] renderers = box.GetComponentsInChildren<Renderer>(true);
+        if (renderers.Length == 0)
+            return false;
+
+        Bounds visual = default;
+        bool hasVisual = false;
+        for (int r = 0; r < renderers.Length; r++)
+        {
+            Renderer renderer = renderers[r];
+            if (renderer == null || !renderer.enabled || renderer is ParticleSystemRenderer)
+                continue;
+            if (!hasVisual)
+            {
+                visual = renderer.bounds;
+                hasVisual = true;
+            }
+            else
+            {
+                visual.Encapsulate(renderer.bounds);
+            }
+        }
+
+        if (!hasVisual)
+            return false;
+
+        Bounds colliderBounds = box.bounds;
+        bool tooWide = colliderBounds.size.x > visual.size.x + 1.25f
+            || colliderBounds.size.z > visual.size.z + 1.25f;
+        bool broadParent = box.transform.childCount > 0
+            && Mathf.Max(colliderBounds.size.x, colliderBounds.size.z) > 2.5f
+            && (box.transform.GetComponent<MeshFilter>() == null || box.transform.GetComponent<Renderer>() == null);
+        return tooWide || broadParent;
+    }
+
+    private static bool IsSciFiNavMeshProxy(Transform transform)
+    {
+        for (Transform t = transform; t != null; t = t.parent)
+        {
+            if (t.name.ToLowerInvariant().Contains("navmeshproxy"))
                 return true;
         }
         return false;
@@ -2914,11 +3454,12 @@ public class LevelBuilder : MonoBehaviour
 
         string[] staleRootNames =
         {
-            GameplayRootName,
             LegacyGameplayRootName,
-            ArenaRootName,
-            EnemyRootName,
-            MinimapCameraName,
+            "FbxMap",
+            "SciFiArena",
+            "SciFiArena(Clone)",
+            "SciFiNavMeshProxyColliders",
+            "SpawnPoints",
             "NavMesh Surface",
             "ArenaVisualClosure",
             "WorldArenaStabilizer",
@@ -2951,6 +3492,7 @@ public class LevelBuilder : MonoBehaviour
 
         if (removed > 0)
             Debug.Log($"[LevelBuilder] Removed {removed} stale generated root object(s) before rebuild.");
+        Debug.Log($"[SciFiFix] cleanup old arena objects count={removed}");
     }
 
     private static bool IsNamedGeneratedRoot(string objectName, string[] staleRootNames)
@@ -3005,7 +3547,11 @@ public class LevelBuilder : MonoBehaviour
 
     private void ConfigurePlayer()
     {
-        PlayerController playerController = Object.FindFirstObjectByType<PlayerController>();
+        Transform fbxMap = GameObject.Find("FbxMap")?.transform;
+        if (fbxMap != null && !useSciFiArena)
+            EnemySpawnGeometry.RefreshStreetSpawnAnchors(fbxMap);
+
+        PlayerController playerController = FindPlayerControllerAny();
         if (playerController == null)
         {
             GameObject playerPrefab = Resources.Load<GameObject>("FirstPersonMelee/Player");
@@ -3025,42 +3571,43 @@ public class LevelBuilder : MonoBehaviour
         if (!playerController.gameObject.CompareTag("Player"))
             playerController.gameObject.tag = "Player";
 
-        // Assign the Hittable layer so deterministic melee never scans scenery.
         SetLayerRecursive(playerController.gameObject, ResolveHittableLayer());
+        if (useSciFiArena)
+        {
+            playerController.gameObject.SetActive(false);
+            ConfigureSciFiPlayerCollision(playerController);
+        }
 
-        Transform fbxMap = GameObject.Find("FbxMap")?.transform;
-        if (fbxMap != null && !useSciFiArena)
-            EnemySpawnGeometry.RefreshStreetSpawnAnchors(fbxMap);
-
-        bool interiorSpawn = LevelInteriorSpawnResolver.RequiresInteriorSpawn;
-        Vector3 safeSpawn;
-        if (interiorSpawn)
+        Vector3 safeSpawn = default;
+        if (useSciFiArena)
         {
             if (!LevelInteriorSpawnResolver.TryResolveInteriorSpawn(playerController, out safeSpawn))
             {
-                Debug.LogError("[LevelBuilder] Player spawn failed: no validated interior floor target was found.");
+                Debug.Log("[SciFiSpawn] blocked player spawn because no valid indoor NavMesh marker or central hall fallback exists.");
+                _playerSpawnReady = false;
+                if (GameManager.Instance != null)
+                    GameManager.Instance.InitializeEnemyCount(0);
                 return;
             }
+        }
+
+        if (useSciFiArena)
+        {
+            Debug.Log($"[SciFiSpawn] LevelBuilder: scifi spawn={safeSpawn} navMeshReady={_navMeshReady}");
+            SetSciFiPlayerSpawnMarker(safeSpawn);
+            LevelInteriorSpawnResolver.ApplyExternalSpawn(playerController, safeSpawn);
+            playerController.transform.rotation = Quaternion.identity;
+            playerController.gameObject.SetActive(true);
+            _playerSpawnReady = true;
         }
         else
         {
             safeSpawn = FindValidatedPlayerSpawnPoint(SafeFallbackSpawn, playerController);
-        }
-
-        if (useSciFiArena)
-            SetSciFiPlayerSpawnMarker(safeSpawn);
-        Debug.Log($"[LevelBuilder] Player spawn: {safeSpawn} (navMeshReady={_navMeshReady})");
-
-        if (interiorSpawn)
-        {
-            LevelInteriorSpawnResolver.ApplyExternalSpawn(playerController, safeSpawn);
-            playerController.transform.rotation = Quaternion.identity;
-        }
-        else
-        {
+            Debug.Log($"[SciFiSpawn] LevelBuilder: outdoor spawn={safeSpawn}");
             playerController.TeleportTo(safeSpawn);
             playerController.transform.rotation = Quaternion.identity;
             playerController.SnapCapsuleToWalkableGround();
+            _playerSpawnReady = true;
         }
         Physics.SyncTransforms();
 
@@ -3087,6 +3634,78 @@ public class LevelBuilder : MonoBehaviour
         }
 
         Debug.Log($"[LevelBuilder] Player configured at {playerController.transform.position}");
+    }
+
+    private void VerifyPlayerInsideArena()
+    {
+        if (!useSciFiArena) return;
+        PlayerController player = Object.FindFirstObjectByType<PlayerController>();
+        if (player == null) return;
+
+        Vector3 pos = player.transform.position;
+        bool invalid = float.IsNaN(pos.x) || float.IsNaN(pos.y) || float.IsNaN(pos.z) || pos.y < -1f;
+
+        if (!invalid && _hasSciFiProxyBounds)
+        {
+            Bounds check = _sciFiProxyBounds;
+            check.Expand(new Vector3(3f, 20f, 3f));
+            invalid = !check.Contains(pos);
+        }
+
+        if (!invalid && _hasAssembledWarehouseBounds)
+        {
+            Bounds check = _assembledWarehouseBounds;
+            check.Expand(new Vector3(3f, 20f, 3f));
+            if (!check.Contains(pos))
+                invalid = true;
+        }
+
+        if (!invalid) return;
+
+        Debug.LogWarning($"[SciFiSpawn] VerifyPlayerInsideArena: player at {pos} is OUTSIDE, forcing respawn");
+        if (!LevelInteriorSpawnResolver.TryResolveInteriorSpawn(player, out Vector3 fix))
+            return;
+        LevelInteriorSpawnResolver.ApplyExternalSpawn(player, fix);
+
+        Camera tpCam = player.ActiveCamera;
+        if (tpCam != null)
+        {
+            CameraController camCtrl = tpCam.GetComponent<CameraController>();
+            if (camCtrl != null)
+                camCtrl.SnapToTarget();
+        }
+    }
+
+    private static void ConfigureSciFiPlayerCollision(PlayerController playerController)
+    {
+        if (playerController == null)
+            return;
+
+        CharacterController controller = playerController.GetComponent<CharacterController>();
+        if (controller != null)
+        {
+            controller.radius = Mathf.Min(controller.radius > 0f ? controller.radius : 0.32f, 0.32f);
+            controller.height = Mathf.Clamp(controller.height > 0f ? controller.height : 1.82f, 1.72f, 1.88f);
+            controller.center = new Vector3(0f, controller.height * 0.5f, 0f);
+            controller.skinWidth = Mathf.Clamp(controller.skinWidth, 0.035f, 0.06f);
+            controller.stepOffset = Mathf.Clamp(controller.stepOffset, 0.28f, 0.42f);
+            controller.slopeLimit = Mathf.Clamp(controller.slopeLimit, 45f, 55f);
+        }
+
+        CapsuleCollider[] capsules = playerController.GetComponentsInChildren<CapsuleCollider>(true);
+        for (int i = 0; i < capsules.Length; i++)
+        {
+            CapsuleCollider capsule = capsules[i];
+            if (capsule == null || capsule.isTrigger)
+                continue;
+            if (capsule.GetComponentInParent<PlayerHealth>() != null)
+                continue;
+            capsule.radius = Mathf.Min(capsule.radius, 0.32f);
+            capsule.height = Mathf.Clamp(capsule.height, 1.72f, 1.88f);
+            capsule.center = new Vector3(capsule.center.x, capsule.height * 0.5f, capsule.center.z);
+        }
+
+        Debug.Log("[SciFiFix] player collision capsule tuned for SciFiArena passages.");
     }
 
     private static void SetSciFiPlayerSpawnMarker(Vector3 position)
@@ -3164,7 +3783,11 @@ public class LevelBuilder : MonoBehaviour
 
         surface.collectObjects = CollectObjects.Children;
         surface.useGeometry = NavMeshCollectGeometry.PhysicsColliders;
-        surface.minRegionArea = 2.5f;
+        surface.minRegionArea = 0.45f;
+        surface.overrideVoxelSize = true;
+        surface.voxelSize = 0.08f;
+        surface.overrideTileSize = true;
+        surface.tileSize = 128;
         surface.layerMask = BuildNavMeshLayerMask();
         return surface;
     }
@@ -3262,6 +3885,14 @@ public class LevelBuilder : MonoBehaviour
                 ClampSciFiSpawnMarkersToNavMesh(navMeshSurface.transform);
             float navArea = EstimateNavMeshCoverageArea();
             bool ready = navArea > 20f && HasAnyNavMeshNearArena();
+            if (useSciFiArena && !ready)
+            {
+                if (BuildSciFiNavMeshFromProxyColliders(navMeshSurface.transform))
+                {
+                    navArea = EstimateNavMeshCoverageArea();
+                    ready = navArea > 20f && HasAnyNavMeshNearArena();
+                }
+            }
             Debug.Log("[AINav] runtime NavMesh build completed");
             if (useSciFiArena)
             {
@@ -3269,10 +3900,12 @@ public class LevelBuilder : MonoBehaviour
                     _lastNavSourceDiagnostics.zeroAreaReason = DiagnoseZeroNavMeshArea(_lastNavSourceDiagnostics);
                 Debug.Log($"[AINav] sources={_lastNavSourceDiagnostics.sources} walkableSources={_lastNavSourceDiagnostics.walkableSources} navMeshArea={navArea:F1} ready={ready.ToString().ToLowerInvariant()}");
                 if (navArea <= 0.01f)
-                    Debug.LogError($"[AINav] NavMesh area is 0.0: {_lastNavSourceDiagnostics.zeroAreaReason}");
+                    Debug.LogWarning($"[AINav] NavMesh area is 0.0: {_lastNavSourceDiagnostics.zeroAreaReason}");
             }
             Debug.Log($"[AINav] NavMesh coverage area = {navArea:F1} m2");
             Debug.Log("[AINav] NavMesh ready = " + ready.ToString().ToLowerInvariant());
+            if (useSciFiArena)
+                Debug.Log($"[SciFiFix] navmesh built={ready.ToString().ToLowerInvariant()} connected rooms={CountConnectedSciFiRoomProbes()}");
             if (ready)
                 Debug.Log("[AINav] using baked NavMesh data");
             return ready;
@@ -3283,6 +3916,52 @@ public class LevelBuilder : MonoBehaviour
             Debug.Log("[AINav] NavMesh ready = false");
             return false;
         }
+    }
+
+    private bool IsRuntimeNavMeshValid()
+    {
+        try
+        {
+            float navArea = EstimateNavMeshCoverageArea();
+            return navArea > 20f && HasAnyNavMeshNearArena();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private int CountConnectedSciFiRoomProbes()
+    {
+        if (!useSciFiArena)
+            return 0;
+
+        Transform playerMarker = FindSciFiArenaPlayerSpawnMarker();
+        Vector3 start = playerMarker != null ? playerMarker.position : Vector3.zero;
+        if (!NavMesh.SamplePosition(start, out NavMeshHit startHit, 30f, NavMesh.AllAreas))
+            return 0;
+
+        Vector3[] probes =
+        {
+            new Vector3(0f, 1f, 0f),
+            new Vector3(18f, 1f, 18f),
+            new Vector3(-18f, 1f, 18f),
+            new Vector3(18f, 1f, -18f),
+            new Vector3(-18f, 1f, -18f)
+        };
+
+        int connected = 0;
+        NavMeshPath path = new NavMeshPath();
+        for (int i = 0; i < probes.Length; i++)
+        {
+            if (!NavMesh.SamplePosition(probes[i], out NavMeshHit probeHit, 16f, NavMesh.AllAreas))
+                continue;
+            if (!NavMesh.CalculatePath(startHit.position, probeHit.position, NavMesh.AllAreas, path))
+                continue;
+            if (path.status == NavMeshPathStatus.PathComplete)
+                connected++;
+        }
+        return connected;
     }
 
     private string DiagnoseZeroNavMeshArea(NavSourceDiagnostics diagnostics)
@@ -3353,8 +4032,14 @@ public class LevelBuilder : MonoBehaviour
 
         NavMesh.RemoveAllNavMeshData();
         _sciFiNavMeshDataInstance.Remove();
+        NavMeshBuildSettings settings = NavMesh.GetSettingsByID(0);
+        settings.agentRadius = 0.28f;
+        settings.agentHeight = 1.85f;
+        settings.agentClimb = 0.42f;
+        settings.agentSlope = 55f;
+
         NavMeshData data = NavMeshBuilder.BuildNavMeshData(
-            NavMesh.GetSettingsByID(0),
+            settings,
             sources,
             bounds,
             Vector3.zero,
@@ -3382,9 +4067,11 @@ public class LevelBuilder : MonoBehaviour
             Transform marker = markers[i];
             if (marker == null || marker == spawnRoot)
                 continue;
-            if (marker.name != "PlayerSpawn" && !marker.name.StartsWith("EnemySpawn_", System.StringComparison.OrdinalIgnoreCase))
+            bool playerMarker = marker.name.StartsWith("PlayerSpawn", System.StringComparison.OrdinalIgnoreCase);
+            if (!playerMarker && !marker.name.StartsWith("EnemySpawn_", System.StringComparison.OrdinalIgnoreCase))
                 continue;
-            if (TryFindNearestSciFiNavMeshPoint(marker.position, marker.name == "PlayerSpawn" ? 80f : 24f, out Vector3 navPoint))
+            if (TryFindNearestSciFiNavMeshPoint(marker.position, playerMarker ? 12f : 24f, out Vector3 navPoint)
+                && (!playerMarker || IsInsideSciFiInteriorSpawnBounds(navPoint)))
                 marker.position = ProjectSciFiPointToSupport(navPoint);
         }
     }
@@ -3723,17 +4410,23 @@ public class LevelBuilder : MonoBehaviour
 
     private void EnsureMinimapCamera()
     {
-        if (Object.FindFirstObjectByType<MinimapCameraFollow>() != null) return;
+        MinimapCameraFollow existing = Object.FindFirstObjectByType<MinimapCameraFollow>();
+        if (existing != null)
+        {
+            existing.ResetArenaCache();
+            return;
+        }
         GameObject minimapObject = new GameObject(MinimapCameraName);
         Transform generatedRoot = GetOrCreateRoot(GameplayRootName);
         minimapObject.transform.SetParent(generatedRoot, false);
         Camera minimapCamera = minimapObject.AddComponent<Camera>();
-        minimapCamera.transform.position = new Vector3(0f, 35f, 0f);
+        minimapCamera.transform.position = new Vector3(0f, 120f, 0f);
         minimapCamera.transform.rotation = Quaternion.Euler(90f, 0f, 0f);
         MinimapCameraFollow follow = minimapObject.AddComponent<MinimapCameraFollow>();
         follow.lockToArenaCenter = false;
-        follow.height = 35f;
-        follow.viewRadius = 26f;
+        follow.height = 120f;
+        follow.viewRadius = 28f;
+        follow.ResetArenaCache();
     }
 
     private static GameObject CreatePrimitive(Transform parent, string objectName,
@@ -4131,7 +4824,7 @@ public class LevelBuilder : MonoBehaviour
         feet = default;
         if (!TryFindNearestSciFiNavMeshPoint(seed, 80f, out Vector3 navPoint))
             return false;
-        if (!IsInsideAssembledWarehouseBounds(navPoint))
+        if (!IsInsideSciFiInteriorSpawnBounds(navPoint))
             return false;
         Vector3 supported = ProjectSciFiPointToSupport(navPoint);
         if (!IsCapsuleSpawnClear(supported, capsuleCenterLocal, radius, height, mask, minObstacleDistance: 0.55f))
@@ -4214,6 +4907,26 @@ public class LevelBuilder : MonoBehaviour
 
         Bounds b = Instance._sciFiProxyBounds;
         b.Expand(new Vector3(1.5f, 6f, 1.5f));
+        return b.Contains(position);
+    }
+
+    private static bool IsInsideSciFiInteriorSpawnBounds(Vector3 position)
+    {
+        if (Instance == null || !Instance.useSciFiArena)
+            return true;
+
+        Bounds b;
+        if (Instance._hasSciFiProxyBounds)
+            b = Instance._sciFiProxyBounds;
+        else if (Instance._hasAssembledWarehouseBounds)
+            b = Instance._assembledWarehouseBounds;
+        else
+            return false;
+
+        float insetX = Mathf.Min(6f, Mathf.Max(2f, b.extents.x * 0.12f));
+        float insetZ = Mathf.Min(6f, Mathf.Max(2f, b.extents.z * 0.12f));
+        b.min = new Vector3(b.min.x + insetX, b.min.y - 0.5f, b.min.z + insetZ);
+        b.max = new Vector3(b.max.x - insetX, b.max.y + 6f, b.max.z - insetZ);
         return b.Contains(position);
     }
 
@@ -4588,6 +5301,35 @@ public class LevelBuilder : MonoBehaviour
         return component != null ? component : target.AddComponent<T>();
     }
 
+    private static PlayerController FindPlayerControllerAny()
+    {
+        PlayerController active = Object.FindFirstObjectByType<PlayerController>();
+        if (active != null)
+            return active;
+
+        PlayerController[] all = Object.FindObjectsByType<PlayerController>(
+            FindObjectsInactive.Include,
+            FindObjectsSortMode.None);
+        for (int i = 0; i < all.Length; i++)
+            if (all[i] != null)
+                return all[i];
+
+        return null;
+    }
+
+    private static void SetExistingPlayersActive(bool active)
+    {
+        PlayerController[] players = Object.FindObjectsByType<PlayerController>(
+            FindObjectsInactive.Include,
+            FindObjectsSortMode.None);
+        for (int i = 0; i < players.Length; i++)
+        {
+            PlayerController player = players[i];
+            if (player == null) continue;
+            player.gameObject.SetActive(active);
+        }
+    }
+
     public static bool IsMultiplayerBuildComplete => _multiplayerBuildComplete;
 
     public static bool IsLocalClientMapReadyForSync()
@@ -4811,6 +5553,8 @@ public class LevelBuilder : MonoBehaviour
             {
                 if (tagged[i] == null) continue;
                 if (tagged[i].transform.IsChildOf(transform)) continue; // never nuke ourselves
+                if (IsRuntimeRootObject(tagged[i]))
+                    continue;
                 DestroyObjectSafe(tagged[i]);
                 destroyed++;
             }
@@ -4823,6 +5567,15 @@ public class LevelBuilder : MonoBehaviour
         if (enemies != null) ClearChildren(enemies);
 
         Debug.Log($"[LevelBuilder] ClearExistingLevel: removed {destroyed} tagged objects + procedural roots.");
+    }
+
+    private static bool IsRuntimeRootObject(GameObject obj)
+    {
+        if (obj == null)
+            return false;
+        return obj.name == GameplayRootName
+            || obj.name == ArenaRootName
+            || obj.name == EnemyRootName;
     }
 
     /// <summary>

@@ -1,23 +1,26 @@
 using UnityEngine;
+using UnityEngine.AI;
 
 public static class LevelInteriorSpawnResolver
 {
-    private const int WrenchLevelIndex = 6;
-    private const float RaycastLift = 6f;
-    private const float RaycastDistance = 40f;
-    private const float MinInteriorInset = 2.5f;
-    private const float InteriorInsetRatio = 0.18f;
-    private const string SpawnPointTag = "SpawnPoint";
+    private const string SpawnPointTag = "PlayerSpawn";
     private const string PlayerSpawnName = "PlayerSpawn";
-    private const string SpawnPointName = "SpawnPoint";
+    private const float NavSampleRadius = 10f;
+    private const float FallbackNavSampleRadius = 28f;
+    private const float SpawnLift = 0.5f;
+
+    private static bool _loggedSpawnFailure;
+
+    public static void ResetDiagnostics()
+    {
+        _loggedSpawnFailure = false;
+    }
 
     public static bool RequiresInteriorSpawn
     {
         get
         {
-            GameManager manager = GameManager.Instance;
-            return manager != null
-                && manager.currentLevel == WrenchLevelIndex
+            return GameManager.Instance != null
                 && LevelBuilder.Instance != null
                 && LevelBuilder.Instance.useSciFiArena;
         }
@@ -31,7 +34,7 @@ public static class LevelInteriorSpawnResolver
         Transform marker = ResolveSpawnReference();
         if (marker != null)
         {
-            spawn = marker.position;
+            spawn = marker.position + Vector3.up * SpawnLift;
             return true;
         }
 
@@ -41,57 +44,62 @@ public static class LevelInteriorSpawnResolver
 
     public static bool TryResolveInteriorSpawn(PlayerController player, out Vector3 spawn)
     {
-        spawn = default;
-        if (!TryGetInteriorFloorBounds(out Bounds bounds))
-            return false;
-
-        Transform reference = ResolveTaggedSpawnReference();
-        if (reference != null && TryProjectToInteriorFloor(reference.position, bounds, player, out spawn))
-            return true;
-
-        Vector3 center = bounds.center;
-        center.y = bounds.max.y + RaycastLift;
-        if (TryProjectToInteriorFloor(center, bounds, player, out spawn))
-            return true;
-
-        reference = ResolveNamedSpawnReference();
-        if (reference != null && TryProjectToInteriorFloor(reference.position, bounds, player, out spawn))
-            return true;
-
-        Collider[] colliders = GetMapRootColliders();
-        float best = float.PositiveInfinity;
-        Vector3 bestPoint = default;
-        bool found = false;
-
-        for (int i = 0; i < colliders.Length; i++)
+        Transform[] markers = ResolveSpawnReferences();
+        if (markers.Length > 0)
         {
-            Collider collider = colliders[i];
-            if (!IsInteriorFloorCollider(collider))
-                continue;
-            Bounds b = collider.bounds;
-            Vector3 probe = new Vector3(b.center.x, b.max.y + RaycastLift, b.center.z);
-            if (!TryProjectToInteriorFloor(probe, bounds, player, out Vector3 candidate))
-                continue;
-            float score = (new Vector2(candidate.x, candidate.z) - new Vector2(bounds.center.x, bounds.center.z)).sqrMagnitude;
-            if (score >= best)
-                continue;
-            best = score;
-            bestPoint = candidate;
-            found = true;
+            int start = markers.Length > 1 ? Random.Range(0, markers.Length) : 0;
+            for (int i = 0; i < markers.Length; i++)
+            {
+                Transform marker = markers[(start + i) % markers.Length];
+                if (marker == null)
+                    continue;
+
+                bool navmesh = false;
+                bool clearance = false;
+                if (TryResolveCandidate(marker.position, NavSampleRadius, player, out spawn, out navmesh, out clearance))
+                {
+                    Debug.Log($"[SciFiSpawn] spawn via marker {marker.name} pos={spawn}");
+                    return true;
+                }
+            }
         }
 
-        if (!found)
-            return false;
+        if (TryBuildFallbackSeeds(out Vector3[] fallbackSeeds))
+        {
+            int start = fallbackSeeds.Length > 1 ? Random.Range(0, fallbackSeeds.Length) : 0;
+            for (int i = 0; i < fallbackSeeds.Length; i++)
+            {
+                bool navmesh2 = false;
+                bool clearance2 = false;
+                if (TryResolveCandidate(fallbackSeeds[(start + i) % fallbackSeeds.Length], FallbackNavSampleRadius, player, out spawn, out navmesh2, out clearance2))
+                {
+                    Debug.Log($"[SciFiSpawn] spawn via fallback#{i} pos={spawn}");
+                    return true;
+                }
+            }
+        }
 
-        spawn = bestPoint;
-        return true;
+        spawn = default;
+        if (!_loggedSpawnFailure)
+        {
+            _loggedSpawnFailure = true;
+            Debug.LogError("[SciFiSpawn] no valid indoor NavMesh spawn found; player spawn blocked.");
+        }
+        return false;
     }
 
     public static bool IsValidInteriorPosition(Vector3 position)
     {
-        if (!TryGetInteriorFloorBounds(out Bounds bounds))
+        if (!RequiresInteriorSpawn)
+            return true;
+
+        if (float.IsNaN(position.x) || float.IsNaN(position.y) || float.IsNaN(position.z))
             return false;
-        return TryProjectToInteriorFloor(position, bounds, null, out _);
+
+        if (position.y < -1f)
+            return false;
+
+        return IsInsideArenaBounds(position);
     }
 
     public static void ApplyExternalSpawn(PlayerController player, Vector3 spawn)
@@ -111,54 +119,116 @@ public static class LevelInteriorSpawnResolver
             controller.enabled = true;
 
         Physics.SyncTransforms();
+        Debug.Log($"[SciFiSpawn] ApplyExternalSpawn completed pos={spawn}");
     }
 
-    private static bool TryProjectToInteriorFloor(Vector3 source, Bounds bounds, PlayerController player, out Vector3 spawn)
+    private static bool TryResolveCandidate(
+        Vector3 seed,
+        float sampleRadius,
+        PlayerController player,
+        out Vector3 spawn,
+        out bool navmesh,
+        out bool clearance)
     {
         spawn = default;
-        Vector3 origin = source + Vector3.up * RaycastLift;
-        RaycastHit[] hits = Physics.RaycastAll(
-            origin,
-            Vector3.down,
-            RaycastDistance + bounds.size.y,
-            BuildInteriorRaycastMask(),
-            QueryTriggerInteraction.Ignore);
+        navmesh = false;
+        clearance = false;
 
-        if (hits == null || hits.Length == 0)
+        if (!NavMesh.SamplePosition(seed, out NavMeshHit hit, sampleRadius, NavMesh.AllAreas))
             return false;
 
-        System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+        navmesh = true;
+        Vector3 candidate = hit.position + Vector3.up * SpawnLift;
+        if (!IsInsideArenaBounds(candidate))
+            return false;
 
-        for (int i = 0; i < hits.Length; i++)
-        {
-            RaycastHit hit = hits[i];
-            if (!IsInteriorFloorCollider(hit.collider))
-                continue;
-            if (!IsInsideInteriorBounds(hit.point, bounds))
-                continue;
-            spawn = hit.point + Vector3.up * ResolveSpawnLift(player);
-            return true;
-        }
+        clearance = HasCapsuleClearance(candidate, player);
+        if (!clearance)
+            return false;
 
-        return false;
+        spawn = candidate;
+        return true;
     }
 
-    private static float ResolveSpawnLift(PlayerController player)
+    private static bool TryBuildFallbackSeeds(out Vector3[] seeds)
+    {
+        seeds = System.Array.Empty<Vector3>();
+        if (!TryGetPlayableBounds(out Bounds bounds))
+            return false;
+
+        Vector3 center = bounds.center;
+        float y = bounds.min.y + 1f;
+        float x = Mathf.Clamp(bounds.extents.x * 0.22f, 4f, 12f);
+        float z = Mathf.Clamp(bounds.extents.z * 0.22f, 4f, 12f);
+        float x2 = Mathf.Clamp(bounds.extents.x * 0.34f, 6f, 18f);
+        float z2 = Mathf.Clamp(bounds.extents.z * 0.34f, 6f, 18f);
+
+        seeds = new[]
+        {
+            new Vector3(center.x, y, center.z),
+            new Vector3(center.x, y, center.z - z),
+            new Vector3(center.x, y, center.z + z),
+            new Vector3(center.x - x, y, center.z),
+            new Vector3(center.x + x, y, center.z),
+            new Vector3(center.x - x, y, center.z - z),
+            new Vector3(center.x + x, y, center.z - z),
+            new Vector3(center.x - x, y, center.z + z),
+            new Vector3(center.x + x, y, center.z + z),
+            new Vector3(center.x - x2, y, center.z),
+            new Vector3(center.x + x2, y, center.z),
+            new Vector3(center.x, y, center.z - z2),
+            new Vector3(center.x, y, center.z + z2),
+            new Vector3(center.x, y + 3f, center.z),
+            new Vector3(center.x, y + 3f, center.z - z)
+        };
+        return true;
+    }
+
+    private static bool HasCapsuleClearance(Vector3 feet, PlayerController player)
     {
         CharacterController controller = player != null ? player.GetComponent<CharacterController>() : null;
-        if (controller == null)
-            return 0.08f;
-        return Mathf.Max(0.08f, controller.skinWidth + 0.02f);
+        float radius = controller != null ? Mathf.Max(0.25f, controller.radius) : 0.4f;
+        float height = controller != null ? Mathf.Max(radius * 2.2f, controller.height) : 2f;
+        Vector3 bottom = feet + Vector3.up * (radius + 0.08f);
+        Vector3 top = feet + Vector3.up * Mathf.Max(radius + 0.12f, height - radius);
+        return !Physics.CheckCapsule(bottom, top, radius * 0.92f, BuildSpawnBlockerMask(), QueryTriggerInteraction.Ignore);
     }
 
     private static Transform ResolveSpawnReference()
     {
-        Transform tagged = ResolveTaggedSpawnReference();
-        return tagged != null ? tagged : ResolveNamedSpawnReference();
+        Transform[] markers = ResolveSpawnReferences();
+        if (markers.Length > 0)
+            return markers[0];
+        return null;
     }
 
-    private static Transform ResolveTaggedSpawnReference()
+    private static Transform[] ResolveSpawnReferences()
     {
+        System.Collections.Generic.List<Transform> markers = new System.Collections.Generic.List<Transform>();
+        GameObject arena = FindArenaRoot();
+        if (arena != null)
+        {
+            Transform direct = arena.transform.Find("SpawnPoints/" + PlayerSpawnName);
+            if (direct != null)
+            {
+                Debug.Log($"[SciFiSpawn] ResolveSpawnReference: found via path SpawnPoints/{PlayerSpawnName} pos={direct.position}");
+                markers.Add(direct);
+            }
+
+            Transform[] all = arena.GetComponentsInChildren<Transform>(true);
+            for (int i = 0; i < all.Length; i++)
+            {
+                Transform t = all[i];
+                if (t != null
+                    && t != direct
+                    && t.name.StartsWith(PlayerSpawnName, System.StringComparison.OrdinalIgnoreCase))
+                {
+                    Debug.Log($"[SciFiSpawn] ResolveSpawnReference: found via deep search pos={t.position}");
+                    markers.Add(t);
+                }
+            }
+        }
+
         GameObject tagged = null;
         try
         {
@@ -166,75 +236,60 @@ public static class LevelInteriorSpawnResolver
         }
         catch { }
 
-        if (tagged != null && tagged.activeInHierarchy)
-            return tagged.transform;
-
-        return null;
-    }
-
-    private static Transform ResolveNamedSpawnReference()
-    {
-        GameObject named = GameObject.Find(SpawnPointName);
-        if (named != null && named.activeInHierarchy)
-            return named.transform;
-
-        GameObject arena = FindArenaRoot();
-        if (arena == null)
-            return null;
-
-        Transform direct = arena.transform.Find("SpawnPoints/" + PlayerSpawnName);
-        if (direct != null && direct.gameObject.activeInHierarchy)
-            return direct;
-
-        Transform[] all = arena.GetComponentsInChildren<Transform>(true);
-        for (int i = 0; i < all.Length; i++)
+        if (tagged != null)
         {
-            Transform t = all[i];
-            if (t != null && t.name == PlayerSpawnName && t.gameObject.activeInHierarchy)
-                return t;
+            Debug.Log($"[SciFiSpawn] ResolveSpawnReference: found via tag pos={tagged.transform.position}");
+            if (!markers.Contains(tagged.transform))
+                markers.Add(tagged.transform);
         }
 
-        return null;
+        if (markers.Count == 0)
+            Debug.Log($"[SciFiSpawn] ResolveSpawnReference: NO spawn marker found arena={(arena != null ? arena.name : "NULL")}");
+        return markers.ToArray();
     }
 
-    private static bool TryGetInteriorFloorBounds(out Bounds bounds)
+    private static bool IsInsideArenaBounds(Vector3 position)
+    {
+        if (!TryGetPlayableBounds(out Bounds bounds))
+            return false;
+
+        float insetX = Mathf.Min(6f, Mathf.Max(2f, bounds.extents.x * 0.12f));
+        float insetZ = Mathf.Min(6f, Mathf.Max(2f, bounds.extents.z * 0.12f));
+        bounds.min = new Vector3(bounds.min.x + insetX, bounds.min.y - 0.5f, bounds.min.z + insetZ);
+        bounds.max = new Vector3(bounds.max.x - insetX, bounds.max.y + 8f, bounds.max.z - insetZ);
+        return bounds.Contains(position);
+    }
+
+    private static bool TryGetPlayableBounds(out Bounds bounds)
     {
         bounds = default;
-        Collider[] colliders = GetMapRootColliders();
-        bool hasBounds = false;
+        GameObject arena = FindArenaRoot();
+        if (arena == null)
+            return false;
 
+        Transform proxyRoot = arena.transform.Find("SciFiNavMeshProxyColliders");
+        Collider[] colliders = proxyRoot != null
+            ? proxyRoot.GetComponentsInChildren<Collider>(false)
+            : arena.GetComponentsInChildren<Collider>(false);
+
+        bool hasBounds = false;
         for (int i = 0; i < colliders.Length; i++)
         {
             Collider collider = colliders[i];
-            if (!IsInteriorFloorCollider(collider))
+            if (collider == null || !collider.enabled || collider.isTrigger)
                 continue;
-
-            Bounds b = collider.bounds;
             if (!hasBounds)
             {
-                bounds = b;
+                bounds = collider.bounds;
                 hasBounds = true;
             }
             else
             {
-                bounds.Encapsulate(b);
+                bounds.Encapsulate(collider.bounds);
             }
         }
 
         return hasBounds;
-    }
-
-    private static Collider[] GetMapRootColliders()
-    {
-        GameObject arena = FindArenaRoot();
-        if (arena == null)
-            return new Collider[0];
-
-        Transform proxyRoot = arena.transform.Find("SciFiNavMeshProxyColliders");
-        if (proxyRoot != null)
-            return proxyRoot.GetComponentsInChildren<Collider>(false);
-
-        return arena.GetComponentsInChildren<Collider>(false);
     }
 
     private static GameObject FindArenaRoot()
@@ -245,42 +300,7 @@ public static class LevelInteriorSpawnResolver
         return arena;
     }
 
-    private static bool IsInteriorFloorCollider(Collider collider)
-    {
-        if (collider == null || !collider.enabled || collider.isTrigger || !collider.gameObject.activeInHierarchy)
-            return false;
-        if (collider.GetComponentInParent<IDamageable>() != null)
-            return false;
-
-        for (Transform t = collider.transform; t != null; t = t.parent)
-        {
-            string n = t.name.ToLowerInvariant();
-            if (n.Contains("wall") || n.Contains("roof") || n.Contains("ceiling") || n.Contains("door")
-                || n.Contains("rail") || n.Contains("railing") || n.Contains("pillar") || n.Contains("beam"))
-                return false;
-            if (n.Contains("scifinavmeshproxycolliders") || n.Contains("floor") || n.Contains("ground")
-                || n.Contains("catwalk") || n.Contains("corridor") || n.Contains("platform") || n.Contains("walkway"))
-                return true;
-        }
-
-        Bounds b = collider.bounds;
-        float horizontal = Mathf.Max(b.size.x, b.size.z);
-        return horizontal >= 2f && b.size.y <= Mathf.Max(0.35f, horizontal * 0.08f);
-    }
-
-    private static bool IsInsideInteriorBounds(Vector3 point, Bounds bounds)
-    {
-        float insetX = Mathf.Min(bounds.extents.x * 0.75f, Mathf.Max(MinInteriorInset, bounds.size.x * InteriorInsetRatio));
-        float insetZ = Mathf.Min(bounds.extents.z * 0.75f, Mathf.Max(MinInteriorInset, bounds.size.z * InteriorInsetRatio));
-        return point.x >= bounds.min.x + insetX
-            && point.x <= bounds.max.x - insetX
-            && point.z >= bounds.min.z + insetZ
-            && point.z <= bounds.max.z - insetZ
-            && point.y >= bounds.min.y - 0.5f
-            && point.y <= bounds.max.y + 2f;
-    }
-
-    private static int BuildInteriorRaycastMask()
+    private static int BuildSpawnBlockerMask()
     {
         int mask = Physics.DefaultRaycastLayers;
         RemoveLayer(ref mask, "Player");

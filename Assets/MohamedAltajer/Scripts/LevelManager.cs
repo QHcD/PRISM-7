@@ -4,13 +4,11 @@ using UnityEngine.SceneManagement;
 
 public class LevelManager : MonoBehaviour
 {
-    private const string PlayerSpawnMarkerName = "PlayerSpawn";
-    private const string SpawnPointsParentName = "SpawnPoints";
     private const string MainMenuSceneName = "MainMenu";
     private const float VoidYThreshold = -2f;
     private const float SafeRespawnLiftY = 0.6f;
     private const float WatchdogIntervalSeconds = 0.25f;
-    private const float WatchdogDurationSeconds = 8f;
+    private const float WatchdogDurationSeconds = 12f;
     private const float GroundProbeUpOffset = 0.5f;
     private const float GroundProbeDistance = 12f;
 
@@ -88,16 +86,38 @@ public class LevelManager : MonoBehaviour
             while (!LevelBuilder.IsRuntimeLevelReady && Time.realtimeSinceStartup < deadline)
                 yield return null;
             if (!LevelBuilder.IsRuntimeLevelReady)
-            {
-                Debug.LogError("[LevelManager] Spawn watchdog halted until LevelBuilder reports a valid runtime NavMesh.");
-                _sceneSafetyRoutine = null;
-                yield break;
-            }
+                Debug.LogWarning("[LevelManager] Spawn watchdog continuing after runtime readiness timeout.");
         }
 
         StabilizeEnvironment();
+        ForcePlayerToInterior();
         _spawnWatchdog = StartCoroutine(SpawnSafetyWatchdog());
         _sceneSafetyRoutine = null;
+    }
+
+    private static void ForcePlayerToInterior()
+    {
+        if (LevelInteriorSpawnResolver.RequiresInteriorSpawn
+            && (!LevelBuilder.IsRuntimeLevelReady || !LevelBuilder.IsRuntimeNavMeshReady))
+            return;
+
+        PlayerController player = Object.FindFirstObjectByType<PlayerController>();
+        if (player == null) return;
+
+        Vector3 pos = player.transform.position;
+        bool invalid = float.IsNaN(pos.x) || float.IsNaN(pos.y) || float.IsNaN(pos.z) || pos.y < VoidYThreshold;
+
+        if (!invalid && LevelInteriorSpawnResolver.RequiresInteriorSpawn)
+            invalid = !LevelInteriorSpawnResolver.IsValidInteriorPosition(pos);
+
+        if (!invalid) return;
+
+        Debug.Log($"[SciFiSpawn] LevelManager: ForcePlayerToInterior from {pos}");
+        if (LevelInteriorSpawnResolver.TryResolveSceneSpawn(player, out Vector3 spawn))
+        {
+            Debug.Log($"[SciFiSpawn] LevelManager: forced to {spawn}");
+            LevelInteriorSpawnResolver.ApplyExternalSpawn(player, spawn);
+        }
     }
 
     private IEnumerator SpawnSafetyWatchdog()
@@ -128,11 +148,16 @@ public class LevelManager : MonoBehaviour
 
         if (LevelInteriorSpawnResolver.RequiresInteriorSpawn)
         {
-            if (!nanPosition && LevelInteriorSpawnResolver.IsValidInteriorPosition(pos))
+            if (!LevelBuilder.IsRuntimeLevelReady || !LevelBuilder.IsRuntimeNavMeshReady)
                 return false;
 
-            if (LevelInteriorSpawnResolver.TryResolveInteriorSpawn(player, out Vector3 interiorTarget))
+            if (!nanPosition && !belowVoid && LevelInteriorSpawnResolver.IsValidInteriorPosition(pos))
+                return false;
+
+            Debug.Log($"[SciFiSpawn] LevelManager watchdog: rescuing player from {pos} nan={nanPosition} void={belowVoid}");
+            if (LevelInteriorSpawnResolver.TryResolveSceneSpawn(player, out Vector3 interiorTarget))
             {
+                Debug.Log($"[SciFiSpawn] LevelManager watchdog: rescued to {interiorTarget}");
                 LevelInteriorSpawnResolver.ApplyExternalSpawn(player, interiorTarget);
                 return true;
             }
@@ -143,11 +168,13 @@ public class LevelManager : MonoBehaviour
         if (!nanPosition && !belowVoid && HasGroundDirectlyBelow(pos))
             return false;
 
-        if (!TryResolveSafeSpawnTarget(out Vector3 safeTarget))
-            return false;
-        player.TeleportTo(safeTarget);
-        Physics.SyncTransforms();
-        return true;
+        if (LevelInteriorSpawnResolver.TryResolveSceneSpawn(player, out Vector3 safeTarget))
+        {
+            LevelInteriorSpawnResolver.ApplyExternalSpawn(player, safeTarget);
+            return true;
+        }
+
+        return false;
     }
 
     private static bool HasGroundDirectlyBelow(Vector3 origin)
@@ -160,37 +187,6 @@ public class LevelManager : MonoBehaviour
             GroundProbeDistance,
             Physics.DefaultRaycastLayers,
             QueryTriggerInteraction.Ignore);
-    }
-
-    private static bool TryResolveSafeSpawnTarget(out Vector3 target)
-    {
-        target = default;
-        Transform marker = LocateActivePlayerSpawnMarker();
-        if (marker == null)
-            return false;
-
-        target = marker.position + Vector3.up * SafeRespawnLiftY;
-        return true;
-    }
-
-    private static Transform LocateActivePlayerSpawnMarker()
-    {
-        GameObject arena = GameObject.Find("FbxMap");
-        if (arena == null) arena = GameObject.Find("SciFiArena");
-        if (arena == null) arena = GameObject.Find("SciFiArena(Clone)");
-        if (arena == null) return null;
-
-        Transform direct = arena.transform.Find(SpawnPointsParentName + "/" + PlayerSpawnMarkerName);
-        if (direct != null) return direct;
-
-        Transform[] children = arena.GetComponentsInChildren<Transform>(true);
-        for (int i = 0; i < children.Length; i++)
-        {
-            Transform t = children[i];
-            if (t != null && t.name == PlayerSpawnMarkerName)
-                return t;
-        }
-        return null;
     }
 
     private void StabilizeEnvironment()
@@ -231,6 +227,5 @@ public class LevelManager : MonoBehaviour
         }
 
         Physics.SyncTransforms();
-        Debug.Log($"[LevelManager] StabilizeEnvironment: {count} environment objects locked and colliders baked.");
     }
 }

@@ -26,7 +26,7 @@ public class SlidingDoor : MonoBehaviour, IInteractable
     public AnimationCurve easing = AnimationCurve.EaseInOut(0f, 0f, 1f, 1f);
 
     [Header("Interaction")]
-    public bool interactiveToggle = true;
+    public bool interactiveToggle = false;
     public string interactionPrompt = "OPEN";
 
     private Vector3 _closedPos;
@@ -68,9 +68,7 @@ public class SlidingDoor : MonoBehaviour, IInteractable
         _routine = null;
     }
 
-    string IInteractable.GetPrompt() => interactiveToggle
-        ? (_isOpen ? "CLOSE" : interactionPrompt)
-        : string.Empty;
-    void   IInteractable.Interact(GameObject by) { if (interactiveToggle) Toggle(); }
-    bool   IInteractable.CanInteract           => interactiveToggle;
+    string IInteractable.GetPrompt() => string.Empty;
+    void   IInteractable.Interact(GameObject by) { }
+    bool   IInteractable.CanInteract           => false;
 }

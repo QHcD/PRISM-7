@@ -46,18 +46,12 @@ public class MinimapCameraFollow : MonoBehaviour
         _cam.orthographic = true;
         _cam.orthographicSize = viewRadius;
         _cam.nearClipPlane = 0.1f;
-        // Far clip generously covers full arena depth (was height+10 = 45 which
-        // was easy to fall short of when the camera is repositioned high above
-        // the arena). 500 is well within ortho-camera precision limits.
         _cam.farClipPlane = 500f;
         _cam.clearFlags = CameraClearFlags.SolidColor;
-        // Slate-blue clear so even unrendered slivers read as "map area" rather
-        // than the previous near-black rectangle (root cause of "dark panel with
-        // markers only" report).
-        _cam.backgroundColor = new Color(0.18f, 0.22f, 0.28f, 1f);
-        _cam.cullingMask = ~0; // render all layers — explicit catch-all
-        _cam.depth = -2;       // render before main cameras
-        _cam.enabled = false;  // HUDManager calls Render() manually — disable auto rendering
+        _cam.backgroundColor = new Color(0.10f, 0.13f, 0.17f, 1f);
+        _cam.cullingMask = BuildMapCullingMask();
+        _cam.depth = -2;
+        _cam.enabled = false;
     }
 
     public void SetFullMapMode(bool enabled, Transform playerTarget = null)
@@ -74,15 +68,18 @@ public class MinimapCameraFollow : MonoBehaviour
                 // so ceilings/catwalks don't occlude the floor layout.
                 float topY = _arenaBounds.max.y + height;
                 transform.position = new Vector3(center.x, topY, center.z);
-                _cam.orthographicSize = Mathf.Max(24f, Mathf.Max(_arenaBounds.extents.x, _arenaBounds.extents.z) + fullMapPadding);
+                _cam.orthographicSize = Mathf.Max(32f, Mathf.Max(_arenaBounds.extents.x, _arenaBounds.extents.z) + fullMapPadding);
                 _cam.farClipPlane = Mathf.Max(500f, (topY - _arenaBounds.min.y) + 50f);
+                Debug.Log($"[SciFiFix] minimap bounds center={_arenaBounds.center} size={_arenaBounds.size}");
             }
             else
             {
                 _cam.orthographicSize = Mathf.Max(viewRadius, 42f);
+                Debug.Log("[SciFiMap] fullmap enabled but no arena bounds found, using default ortho size");
             }
 
             transform.rotation = Quaternion.Euler(90f, 0f, 0f);
+            Debug.Log($"[SciFiMap] fullmap camera pos={transform.position} orthoSize={_cam.orthographicSize} farClip={_cam.farClipPlane} cullingMask=0x{_cam.cullingMask:X}");
             return;
         }
 
@@ -93,6 +90,14 @@ public class MinimapCameraFollow : MonoBehaviour
             float topY = _hasArenaBounds ? _arenaBounds.max.y + height : playerTarget.position.y + height;
             transform.position = new Vector3(playerTarget.position.x, topY, playerTarget.position.z);
         }
+    }
+
+    public void ResetArenaCache()
+    {
+        _hasArenaBounds = false;
+        _arenaBounds = default;
+        CacheArenaBounds();
+        ConfigureCamera();
     }
 
     /// <summary>
@@ -113,7 +118,10 @@ public class MinimapCameraFollow : MonoBehaviour
             _rt.Create();
 
             if (_cam != null)
+            {
                 _cam.targetTexture = _rt;
+                Debug.Log($"[SciFiMap] RenderTexture created {textureSize}x{textureSize} assigned to camera={_cam.name} enabled={_cam.enabled}");
+            }
         }
 
         return _rt;
@@ -132,9 +140,6 @@ public class MinimapCameraFollow : MonoBehaviour
 
     private void CacheArenaBounds()
     {
-        // Prefer the SciFiArena's Floors group when present — it gives perfectly
-        // centered playable bounds without ceiling cap, perimeter overhangs, or
-        // decorative props skewing the result.
         if (TryGetSciFiFloorBounds(out Bounds floorBounds))
         {
             _hasArenaBounds = true;
@@ -180,11 +185,6 @@ public class MinimapCameraFollow : MonoBehaviour
         _arenaBounds = combinedBounds;
     }
 
-    /// <summary>
-    /// Computes bounds from the SciFiArena's Floors group only, giving a clean
-    /// centered playable area. Returns false if the arena isn't loaded or the
-    /// Floors hierarchy isn't found.
-    /// </summary>
     private bool TryGetSciFiFloorBounds(out Bounds bounds)
     {
         bounds = default;
@@ -194,8 +194,16 @@ public class MinimapCameraFollow : MonoBehaviour
                         ?? GameObject.Find("SciFiArena(Clone)");
         if (arena == null) return false;
 
+        Transform proxyRoot = arena.transform.Find("SciFiNavMeshProxyColliders");
+        if (proxyRoot != null && TryGetColliderBounds(proxyRoot, out bounds))
+            return true;
+
         Transform floors = arena.transform.Find("Floors");
-        if (floors == null) return false;
+        if (floors == null)
+        {
+            bounds = new Bounds(Vector3.zero, new Vector3(54f, 1f, 54f));
+            return true;
+        }
 
         Renderer[] floorRenderers = floors.GetComponentsInChildren<Renderer>(true);
         if (floorRenderers == null || floorRenderers.Length == 0) return false;
@@ -209,5 +217,50 @@ public class MinimapCameraFollow : MonoBehaviour
             else bounds.Encapsulate(r.bounds);
         }
         return init;
+    }
+
+    private static bool TryGetColliderBounds(Transform root, out Bounds bounds)
+    {
+        bounds = default;
+        Collider[] colliders = root != null ? root.GetComponentsInChildren<Collider>(false) : null;
+        bool init = false;
+        if (colliders == null) return false;
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider collider = colliders[i];
+            if (collider == null || !collider.enabled || collider.isTrigger)
+                continue;
+            if (!init)
+            {
+                bounds = collider.bounds;
+                init = true;
+            }
+            else
+            {
+                bounds.Encapsulate(collider.bounds);
+            }
+        }
+        return init;
+    }
+
+    private static int BuildMapCullingMask()
+    {
+        int mask = ~0;
+        RemoveLayer(ref mask, "Player");
+        RemoveLayer(ref mask, "Enemy");
+        RemoveLayer(ref mask, "Enemies");
+        RemoveLayer(ref mask, "UI");
+        RemoveLayer(ref mask, "Ignore Raycast");
+        RemoveLayer(ref mask, "IgnoreMinimap");
+        RemoveLayer(ref mask, "Hittable");
+        Debug.Log($"[SciFiMap] minimap cullingMask=0x{mask:X}");
+        return mask;
+    }
+
+    private static void RemoveLayer(ref int mask, string layerName)
+    {
+        int layer = LayerMask.NameToLayer(layerName);
+        if (layer >= 0)
+            mask &= ~(1 << layer);
     }
 }

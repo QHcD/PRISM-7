@@ -317,18 +317,15 @@ public class PlayerInteractor : MonoBehaviour
     {
         if (col == null) return null;
 
-        // Doors are AUTO-OPEN now (proximity-triggered via SciFiSlidingDoor /
-        // DoorPassThroughOpen). The "[E] TO INTERACT" reticle must never appear
-        // for a door — suppress door interactables here, *and* also bail out if
-        // the hit collider lives under a door-like root, so we don't fall back
-        // to picking up some other interactable behind the door.
         for (Transform tr = col.transform; tr != null; tr = tr.parent)
         {
             string lower = tr.name.ToLowerInvariant();
-            if (lower.Contains("door") || lower.Contains("gate") || lower.Contains("garage") ||
-                lower.Contains("shutter") || lower.Contains("rollup"))
-                return null;
-            if (tr.GetComponent<SciFiSlidingDoor>() != null)
+            if (tr.GetComponent<SciFiSlidingDoor>() != null
+                || lower.Contains("door")
+                || lower.Contains("gate")
+                || lower.Contains("garage")
+                || lower.Contains("shutter")
+                || lower.Contains("rollup"))
                 return null;
         }
 
@@ -405,7 +402,7 @@ public class PlayerInteractor : MonoBehaviour
 
         door.openOnStart = false;
         door.openOnPlayerTrigger = false;
-        door.interactiveToggle = true;
+        door.interactiveToggle = false;
         passThrough.hideOnOpen = false; // keep door visible — only disable colliders for pass-through
         return door;
     }

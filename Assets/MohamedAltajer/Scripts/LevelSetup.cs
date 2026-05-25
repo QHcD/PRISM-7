@@ -1,10 +1,6 @@
 using System.Collections;
 using UnityEngine;
 
-/// <summary>
-/// Scene-level safety net. Attach this to LevelManager if the generated
-/// LevelBuilder path is noisy or package tooling fails during startup.
-/// </summary>
 public class LevelSetup : MonoBehaviour
 {
     public PlayerController player;
@@ -15,13 +11,13 @@ public class LevelSetup : MonoBehaviour
         if (Application.isPlaying && LevelBuilder.Instance != null)
         {
             float deadline = Time.realtimeSinceStartup + 12f;
-            while (!LevelBuilder.IsRuntimeLevelReady && Time.realtimeSinceStartup < deadline)
+            while ((!LevelBuilder.IsRuntimeLevelReady
+                    || (LevelInteriorSpawnResolver.RequiresInteriorSpawn && !LevelBuilder.IsRuntimeNavMeshReady))
+                   && Time.realtimeSinceStartup < deadline)
                 yield return null;
-            if (!LevelBuilder.IsRuntimeLevelReady)
-            {
-                Debug.LogError("[LevelSetup] Setup halted until LevelBuilder reports a valid runtime NavMesh.");
-                yield break;
-            }
+            if (!LevelBuilder.IsRuntimeLevelReady
+                || (LevelInteriorSpawnResolver.RequiresInteriorSpawn && !LevelBuilder.IsRuntimeNavMeshReady))
+                Debug.LogWarning("[LevelSetup] Continuing setup after runtime readiness timeout.");
         }
 
         RunSetup();
@@ -94,6 +90,9 @@ public class LevelSetup : MonoBehaviour
 
     private void ForceFallbackSpawnIfNeeded()
     {
+        if (LevelInteriorSpawnResolver.RequiresInteriorSpawn && !LevelBuilder.IsRuntimeNavMeshReady)
+            return;
+
         if (player == null)
             return;
 
@@ -103,16 +102,35 @@ public class LevelSetup : MonoBehaviour
             || float.IsNaN(position.z)
             || position.y < -0.5f;
 
-        if (!unsafePosition && (!LevelInteriorSpawnResolver.RequiresInteriorSpawn || LevelInteriorSpawnResolver.IsValidInteriorPosition(position)))
+        if (!unsafePosition && LevelInteriorSpawnResolver.RequiresInteriorSpawn)
+            unsafePosition = !LevelInteriorSpawnResolver.IsValidInteriorPosition(position);
+
+        if (!unsafePosition)
             return;
 
+        Debug.Log($"[SciFiSpawn] LevelSetup: player position unsafe pos={position}, resolving...");
         if (LevelInteriorSpawnResolver.TryResolveSceneSpawn(player, out Vector3 spawn))
+        {
+            Debug.Log($"[SciFiSpawn] LevelSetup: resolved to {spawn}");
             LevelInteriorSpawnResolver.ApplyExternalSpawn(player, spawn);
+
+            if (gameplayCamera != null)
+            {
+                CameraController camCtrl = gameplayCamera.GetComponent<CameraController>();
+                if (camCtrl != null)
+                    camCtrl.SnapToTarget();
+            }
+        }
     }
 
     private void EnsureGroundVisible()
     {
         bool hasFbxMap = GameObject.Find("FbxMap") != null;
+        if (LevelBuilder.Instance != null && LevelBuilder.Instance.useSciFiArena && !hasFbxMap)
+        {
+            Debug.LogError("[SciFiSpawn] SciFiArena map root missing; fallback exterior ground will not be created.");
+            return;
+        }
         bool foundGround = false;
         string[] names = { "Plane", "Ground", "ground", "PhysicsFloor", "Ground_PhysicsFloor", "ArenaFloor" };
 
@@ -124,7 +142,6 @@ public class LevelSetup : MonoBehaviour
 
             if (hasFbxMap)
             {
-                // Hide procedural/fallback ground meshes since FbxMap is successfully loaded
                 Renderer[] renderers = ground.GetComponentsInChildren<Renderer>(true);
                 for (int r = 0; r < renderers.Length; r++)
                 {
@@ -170,12 +187,8 @@ public class LevelSetup : MonoBehaviour
             }
         }
 
-        // Fix: if this fallback exists in a real level, it should not visually block the scene.
-        // We only disable the MeshRenderer as requested (collider stays intact).
         if (fallbackRenderer != null)
             fallbackRenderer.enabled = false;
-
-        Debug.LogWarning("[LevelSetup] No ground renderer found; created VisibleGround_Fallback.");
     }
 
     private void StabilizeSceneStructures()
@@ -191,24 +204,12 @@ public class LevelSetup : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Walk every "Map" / "Environment" / "Level" root and:
-    ///   • Destroy non-kinematic Rigidbodies on geometry (floors and walls
-    ///     must not fall under gravity once the scene starts).
-    ///   • Re-assign every collidable child to the "Environment" layer so the
-    ///     camera SphereCast mask in CameraController catches them as
-    ///     wall/floor blockers.
-    /// IDamageable actors (player, enemies) parented under these roots are
-    /// preserved untouched so their physics aren't broken.
-    /// </summary>
     private void StabilizeEnvironment()
     {
         string[] rootNames = { "Map", "Environment", "Level", "World", "Geometry", "Arena" };
         int envLayer = LayerMask.NameToLayer("Environment");
         int mapLayer = LayerMask.NameToLayer("Map");
 
-        // Pass 1: by-name root scan — catches scenes where geometry is grouped
-        // under a recognisable parent but not yet on a dedicated layer.
         for (int i = 0; i < rootNames.Length; i++)
         {
             GameObject root = GameObject.Find(rootNames[i]);
@@ -216,8 +217,6 @@ public class LevelSetup : MonoBehaviour
             StabilizeHierarchy(root.transform, envLayer);
         }
 
-        // Pass 2: by-layer scan — catches loose geometry that isn't grouped
-        // under any known root but is already on Map/Environment.
         if (envLayer >= 0 || mapLayer >= 0)
             StabilizeByLayer(envLayer, mapLayer);
     }
@@ -255,11 +254,8 @@ public class LevelSetup : MonoBehaviour
             Collider col = colliders[i];
             if (col == null) continue;
 
-            // Never touch characters — they own their own physics setup.
             if (col.GetComponentInParent<IDamageable>() != null) continue;
 
-            // Strip the body so the floor / walls don't fall when the scene
-            // starts. Kinematic bodies (moving platforms etc.) are preserved.
             Rigidbody rb = col.attachedRigidbody;
             if (rb != null && !rb.isKinematic
                 && rb.GetComponentInParent<IDamageable>() == null)
@@ -272,22 +268,15 @@ public class LevelSetup : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Performance pass: destroy known-heavy props that are not gameplay-critical.
-    /// Concrete Barriers are preserved; everything else on the hit list is removed.
-    /// </summary>
     private void DestroyHeavyLevelProps()
     {
-        // Name fragments to destroy (case-insensitive substring match).
         string[] destroyPatterns = { "car", "wooden box", "woodenbox", "red building", "redbuilding" };
-        // Prefixes that must be preserved even if they contain a destroy pattern.
         string[] preservePatterns = { "concrete barrier", "concretebarrier" };
 
         GameObject[] all = FindObjectsByType<GameObject>(FindObjectsSortMode.None);
         foreach (GameObject go in all)
         {
             if (go == null || !go.scene.IsValid()) continue;
-            // Never destroy the player or enemies.
             if (go.GetComponentInParent<IDamageable>() != null) continue;
 
             string nameLower = go.name.ToLowerInvariant();
@@ -312,8 +301,6 @@ public class LevelSetup : MonoBehaviour
     {
         try
         {
-            // Optional AI/Sentis/npm-backed editor tooling is intentionally not
-            // required for movement, camera, or melee combat.
         }
         catch (System.Exception e)
         {

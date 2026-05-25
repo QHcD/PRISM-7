@@ -51,13 +51,13 @@ public class LevelInitialization : MonoBehaviour
         if (LevelBuilder.Instance != null)
         {
             float deadline = Time.realtimeSinceStartup + 12f;
-            while (!LevelBuilder.IsRuntimeLevelReady && Time.realtimeSinceStartup < deadline)
+            while ((!LevelBuilder.IsRuntimeLevelReady
+                    || (LevelInteriorSpawnResolver.RequiresInteriorSpawn && !LevelBuilder.IsRuntimeNavMeshReady))
+                   && Time.realtimeSinceStartup < deadline)
                 yield return null;
-            if (!LevelBuilder.IsRuntimeLevelReady)
-            {
-                Debug.LogError("[LevelInitialization] Player initialization halted until LevelBuilder reports a valid runtime NavMesh.");
-                yield break;
-            }
+            if (!LevelBuilder.IsRuntimeLevelReady
+                || (LevelInteriorSpawnResolver.RequiresInteriorSpawn && !LevelBuilder.IsRuntimeNavMeshReady))
+                Debug.LogWarning("[LevelInitialization] Continuing player initialization after runtime readiness timeout.");
         }
 
         SnapPlayerToSpawn();
@@ -89,12 +89,32 @@ public class LevelInitialization : MonoBehaviour
 
     private static void SnapPlayerToSpawn()
     {
+        if (LevelInteriorSpawnResolver.RequiresInteriorSpawn && !LevelBuilder.IsRuntimeNavMeshReady)
+            return;
+
         PlayerController player = Object.FindFirstObjectByType<PlayerController>();
         if (player == null) return;
 
-        if (!LevelInteriorSpawnResolver.TryResolveSceneSpawn(player, out Vector3 spawn))
-            return;
+        Vector3 currentPos = player.transform.position;
+        bool posInvalid = float.IsNaN(currentPos.x) || float.IsNaN(currentPos.y) || float.IsNaN(currentPos.z)
+            || currentPos.y < -0.5f;
 
+        if (!posInvalid && LevelInteriorSpawnResolver.RequiresInteriorSpawn)
+            posInvalid = !LevelInteriorSpawnResolver.IsValidInteriorPosition(currentPos);
+
+        if (!posInvalid)
+        {
+            Debug.Log($"[SciFiSpawn] LevelInitialization: player position valid at {currentPos}");
+            return;
+        }
+
+        if (!LevelInteriorSpawnResolver.TryResolveSceneSpawn(player, out Vector3 spawn))
+        {
+            Debug.Log($"[SciFiSpawn] LevelInitialization: no spawn resolved, player stays at {currentPos}");
+            return;
+        }
+
+        Debug.Log($"[SciFiSpawn] LevelInitialization: spawning player at {spawn} (was {currentPos})");
         LevelInteriorSpawnResolver.ApplyExternalSpawn(player, spawn);
     }
 
