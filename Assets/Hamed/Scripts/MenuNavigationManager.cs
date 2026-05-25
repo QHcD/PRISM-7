@@ -3,9 +3,7 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
-#if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
-#endif
 
 /// <summary>
 /// Arrow-key navigation for runtime-built menus: main-menu grid or a simple vertical list.
@@ -177,7 +175,6 @@ public class MenuNavigationManager : MonoBehaviour
         if (!_initialized || _selectables.Count == 0) return;
         if (!AnyInteractableVisible()) return;
 
-#if ENABLE_INPUT_SYSTEM
         Keyboard kb = Keyboard.current;
         if (kb == null) return;
 
@@ -191,17 +188,6 @@ public class MenuNavigationManager : MonoBehaviour
 
         if (kb.enterKey.wasPressedThisFrame || kb.numpadEnterKey.wasPressedThisFrame)
             ActivateFocused();
-#else
-        if (UnityEngine.Input.GetKeyDown(KeyCode.UpArrow)) { MoveVertical(-1); return; }
-        if (UnityEngine.Input.GetKeyDown(KeyCode.DownArrow)) { MoveVertical(1); return; }
-        if (_layout == NavLayout.MainMenuGrid)
-        {
-            if (UnityEngine.Input.GetKeyDown(KeyCode.LeftArrow)) { MoveHorizontal(-1); return; }
-            if (UnityEngine.Input.GetKeyDown(KeyCode.RightArrow)) { MoveHorizontal(1); return; }
-        }
-        if (UnityEngine.Input.GetKeyDown(KeyCode.Return) || UnityEngine.Input.GetKeyDown(KeyCode.KeypadEnter))
-            ActivateFocused();
-#endif
     }
 
     private bool AnyInteractableVisible()

@@ -98,13 +98,7 @@ public class PauseMenuController : MonoBehaviour
 
     private static string DetectInputBackend()
     {
-        bool legacy = false, newSys = false;
-        try { var _ = Input.anyKey; legacy = true; } catch { }
-        try { newSys = Keyboard.current != null || UnityEngine.InputSystem.InputSystem.devices.Count >= 0; } catch { }
-        if (legacy && newSys) return "Both";
-        if (legacy) return "Legacy";
-        if (newSys) return "New";
-        return "None";
+        return "New";
     }
 
     private readonly string[] graphicsLabels = { "LOW", "MEDIUM", "HIGH" };
@@ -156,18 +150,10 @@ public class PauseMenuController : MonoBehaviour
             return;
         }
 
-        if (!_firstUpdateLogged)
-        {
-            _firstUpdateLogged = true;
-            Debug.Log("[MPPauseDiag] Update running");
-        }
+        _firstUpdateLogged = true; // kept to preserve any external check that reads the field
 
-        _aliveLogTimer -= Time.unscaledDeltaTime;
-        if (_aliveLogTimer <= 0f)
-        {
-            _aliveLogTimer = 5f;
-            Debug.Log("[MPPauseDiag] controller alive");
-        }
+        // Periodic "controller alive" log removed — it produced unnecessary
+        // background spam during gameplay. The first-frame ping above is enough.
     }
 
     private void HandleEscapeAfterInput()
@@ -259,6 +245,11 @@ public class PauseMenuController : MonoBehaviour
         EnsureEventSystem();
         BuildPauseMenu();
         ShowPanel(mainPanel);
+
+        // Clear any stale UI selection so the first stray Enter/Space press
+        // never auto-fires the "currently selected" button (used to be Restart).
+        if (EventSystem.current != null)
+            EventSystem.current.SetSelectedGameObject(null);
 
         // Multiplayer keeps Time.timeScale = 1 — pausing time would freeze
         // Photon serialization, RPCs, and remote players. SP behaviour is
@@ -370,6 +361,7 @@ public class PauseMenuController : MonoBehaviour
         overlay.transform.SetParent(pauseCanvas.transform, false);
         Stretch(overlay.rectTransform);
         overlay.color = new Color(0.02f, 0.02f, 0.06f, 0.72f);
+        overlay.raycastTarget = false;
 
         mainPanel = CreatePausePanel("PausePanel_Main", new Vector2(760f, 700f));
         settingsPanel = CreatePausePanel("PausePanel_Settings", new Vector2(900f, 920f));
@@ -383,6 +375,13 @@ public class PauseMenuController : MonoBehaviour
         Image panel = new GameObject(name).AddComponent<Image>();
         panel.transform.SetParent(pauseCanvas.transform, false);
         panel.color = new Color(0.16f, 0.20f, 0.30f, 0.36f);
+        // CRITICAL: panel background must not receive clicks. Without this, the
+        // EventSystem treated the blue panel as a clickable surface; combined
+        // with last-selected-button defaulting to RESTART, ambient mouse clicks
+        // on the empty panel area fired RestartGame(). raycastTarget=false
+        // means only the actual Resume/Restart/Settings/Quit buttons receive
+        // clicks now.
+        panel.raycastTarget = false;
 
         RectTransform panelRect = panel.rectTransform;
         panelRect.anchorMin = new Vector2(0.5f, 0.5f);
@@ -771,6 +770,13 @@ public class PauseMenuController : MonoBehaviour
         Button button = buttonImage.gameObject.AddComponent<Button>();
         button.targetGraphic = buttonImage;
         button.onClick.AddListener(action);
+        // Disable EventSystem navigation/auto-select. Without this, the last
+        // pressed button (often Settings → returned to main → Resume etc.)
+        // remained the "selected" UI target, and a stray Enter/Space press
+        // or pointer-click on the panel area was forwarded to it.
+        Navigation nav = button.navigation;
+        nav.mode = Navigation.Mode.None;
+        button.navigation = nav;
 
         TextMeshProUGUI label = new GameObject("Label").AddComponent<TextMeshProUGUI>();
         label.transform.SetParent(buttonImage.transform, false);
@@ -802,6 +808,7 @@ public class PauseMenuController : MonoBehaviour
         TextMeshProUGUI label = new GameObject("Txt_" + text).AddComponent<TextMeshProUGUI>();
         label.transform.SetParent(parent, false);
         label.text = text;
+        label.raycastTarget = false; // labels never receive clicks
         label.fontSize = fontSize;
         label.color = color;
         label.alignment = alignment;

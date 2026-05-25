@@ -42,13 +42,8 @@ public sealed class MultiplayerEscPauseRouter : MonoBehaviour
         bool hudIsRunning = HUDManager.Instance != null && HUDManager.Instance.isActiveAndEnabled;
         if (!hudIsRunning)
         {
-            _aliveLogTimer -= Time.unscaledDeltaTime;
-            if (_aliveLogTimer <= 0f)
-            {
-                _aliveLogTimer = 5f;
-                Debug.Log("[MPPauseHUD] alive");
-            }
-
+            // Periodic alive log removed; ProcessEscPauseInput is the real
+            // useful work here and runs unchanged.
             ProcessEscPauseInput();
         }
     }
@@ -90,19 +85,8 @@ public sealed class MultiplayerEscPauseRouter : MonoBehaviour
 
     private static bool WasEscapePressedThisFrame()
     {
-        bool legacyEsc = false;
-        try
-        {
-            legacyEsc = Input.GetKeyDown(KeyCode.Escape);
-        }
-        catch (System.InvalidOperationException)
-        {
-            legacyEsc = false;
-        }
-
         Keyboard keyboard = Keyboard.current;
-        bool inputSystemEsc = keyboard != null && keyboard.escapeKey.wasPressedThisFrame;
-        return legacyEsc || inputSystemEsc;
+        return keyboard != null && keyboard.escapeKey.wasPressedThisFrame;
     }
 
     private static PauseMenuController FindPauseMenuController()

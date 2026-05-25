@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 public sealed class HoldTabMinimapCamera : MonoBehaviour
 {
@@ -20,11 +21,15 @@ public sealed class HoldTabMinimapCamera : MonoBehaviour
     {
         if (minimapCamera == null) return;
 
-        if (Input.GetKeyDown(KeyCode.Tab))
-            minimapCamera.enabled = true;
+        Keyboard kb = Keyboard.current;
+        if (kb != null)
+        {
+            if (kb.tabKey.wasPressedThisFrame)
+                minimapCamera.enabled = true;
 
-        if (Input.GetKeyUp(KeyCode.Tab))
-            minimapCamera.enabled = false;
+            if (kb.tabKey.wasReleasedThisFrame)
+                minimapCamera.enabled = false;
+        }
     }
 }
 

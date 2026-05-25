@@ -82,7 +82,10 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
 
     [Tooltip("Closest the camera can get (used as collision floor and for cramped spaces).")]
     [Range(0.1f, 3f)]
-    public float minDistance = 0.4f;
+    // Raised from 0.4 → 1.2 so the camera can never sit inside the player's
+    // head/body/weapon even if SphereCast incorrectly registers a hit on the
+    // rig. 1.2 m keeps the third-person silhouette intact in tight corners.
+    public float minDistance = 1.25f;
 
     // ── Smoothing ─────────────────────────────────────────────────────────────
     [Header("Smooth Follow")]
@@ -106,7 +109,7 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
     [Tooltip("Horizontal shoulder offset (positive = right shoulder, negative = left). " +
              "0 = centred behind the player.")]
     [Range(-1f, 1f)]
-    public float shoulderOffset = 0.35f;
+    public float shoulderOffset = 0.48f;
 
     // ── Collision ─────────────────────────────────────────────────────────────
     [Header("Wall Collision")]
@@ -244,15 +247,25 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
         // Auto-find the player if no target was assigned in the Inspector.
         if (target == null)
         {
-            GameObject playerObj = GameObject.FindWithTag("Player");
-            if (playerObj != null)
-                target = playerObj.transform;
+            PlayerController pc = Object.FindFirstObjectByType<PlayerController>();
+            if (pc != null)
+            {
+                target = pc.transform;
+                Debug.Log($"[CameraTarget] Resolved orbit camera target authoritative transform: {target.name} via PlayerController.");
+            }
+            else
+            {
+                GameObject playerObj = GameObject.FindWithTag("Player");
+                if (playerObj != null)
+                {
+                    target = playerObj.transform;
+                    Debug.Log($"[CameraTarget] Resolved orbit camera target transform: {target.name} via Tag fallback.");
+                }
+            }
         }
-
-        if (target == null)
+        else
         {
-            Debug.LogWarning("[ThirdPersonOrbitCamera] No target assigned and no GameObject tagged 'Player' found. " +
-                             "Camera will remain stationary until a target is set.");
+            Debug.Log($"[CameraTarget] Orbit camera using pre-assigned target transform: {target.name}.");
         }
 
         // ── Build collision mask ──────────────────────────────────────────────
@@ -330,11 +343,18 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
 
     private void ReadMouseInput()
     {
-        // Input.GetAxis works in both legacy and new Input System when the project
-        // has "Both" active input handling enabled in Project Settings → Player.
-        // This is the safest cross-version approach for Unity 6.
-        float mouseX = Input.GetAxis("Mouse X");
-        float mouseY = Input.GetAxis("Mouse Y");
+        float mouseX = 0f;
+        float mouseY = 0f;
+
+        if (UnityEngine.InputSystem.Mouse.current != null)
+        {
+            Vector2 mouseDelta = UnityEngine.InputSystem.Mouse.current.delta.ReadValue();
+            // Input.GetAxis("Mouse X") returns values scaled by sensitivity and speed.
+            // Under new Input System, Mouse.current.delta.ReadValue() returns raw pixel delta.
+            // Multiplying pixel delta by 0.05f provides a comparable scaling factor.
+            mouseX = mouseDelta.x * 0.05f;
+            mouseY = mouseDelta.y * 0.05f;
+        }
 
         // Apply sensitivity (the GetAxis value is already framerate-independent
         // when Sensitivity is set to 1 in the Input Manager, but multiply it

@@ -317,12 +317,20 @@ public class PlayerInteractor : MonoBehaviour
     {
         if (col == null) return null;
 
-        DoorController door = FindDoorController(col);
-        if (door == null)
-            door = EnsureRuntimeDoorController(col);
-
-        if (door != null && door.enabled)
-            return door;
+        // Doors are AUTO-OPEN now (proximity-triggered via SciFiSlidingDoor /
+        // DoorPassThroughOpen). The "[E] TO INTERACT" reticle must never appear
+        // for a door — suppress door interactables here, *and* also bail out if
+        // the hit collider lives under a door-like root, so we don't fall back
+        // to picking up some other interactable behind the door.
+        for (Transform tr = col.transform; tr != null; tr = tr.parent)
+        {
+            string lower = tr.name.ToLowerInvariant();
+            if (lower.Contains("door") || lower.Contains("gate") || lower.Contains("garage") ||
+                lower.Contains("shutter") || lower.Contains("rollup"))
+                return null;
+            if (tr.GetComponent<SciFiSlidingDoor>() != null)
+                return null;
+        }
 
         // Walk up parents. At each level also scan that level's SUBTREE for an
         // IInteractable. Critical for the SciFi kit: Wall_Door's BoxColliders live on
@@ -398,7 +406,7 @@ public class PlayerInteractor : MonoBehaviour
         door.openOnStart = false;
         door.openOnPlayerTrigger = false;
         door.interactiveToggle = true;
-        passThrough.hideOnOpen = true;
+        passThrough.hideOnOpen = false; // keep door visible — only disable colliders for pass-through
         return door;
     }
 
@@ -429,17 +437,16 @@ public class PlayerInteractor : MonoBehaviour
             return;
         }
 
-        int disabledCount = 0;
+        // Disable only colliders so characters can pass through; keep the door
+        // mesh visible (no SetActive(false) — previous behaviour was the cause
+        // of "doors missing" reports).
         Collider[] colliders = doorRoot.GetComponentsInChildren<Collider>(true);
         for (int i = 0; i < colliders.Length; i++)
         {
             Collider c = colliders[i];
             if (c == null || !c.enabled) continue;
             c.enabled = false;
-            disabledCount++;
         }
-
-        doorRoot.gameObject.SetActive(false);
     }
 
     private static Transform FindNearestDoorRoot(Collider col)

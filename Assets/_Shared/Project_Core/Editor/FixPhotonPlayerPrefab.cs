@@ -40,6 +40,12 @@ public static class FixPhotonPlayerPrefab
 
     private static void ApplyFix(bool silent)
     {
+        if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "MainMenu")
+        {
+            Debug.Log("[PhotonSpawn] Blocked in MainMenu.");
+            return;
+        }
+
         Debug.Log($"[PhotonSpawn] prefab path={ResourcePath}");
 
         GameObject root = AssetDatabase.LoadAssetAtPath<GameObject>(PrefabPath);

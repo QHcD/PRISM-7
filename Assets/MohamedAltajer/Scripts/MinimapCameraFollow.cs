@@ -12,7 +12,11 @@ public class MinimapCameraFollow : MonoBehaviour
     public bool lockToArenaCenter = true;
 
     // World-space Y height of the minimap camera above the ground plane.
-    public float height = 35f;
+    // Bumped from 35 → 120 so the orthographic top-down view always sits ABOVE
+    // any arena ceiling/catwalk geometry and actually captures the floor/walls
+    // layout (previously the camera could end up below ceiling caps and only
+    // rendered the dark clear-colour with no level visible).
+    public float height = 120f;
 
     // Resolution of the minimap render texture (square).
     public int textureSize = 256;
@@ -42,10 +46,16 @@ public class MinimapCameraFollow : MonoBehaviour
         _cam.orthographic = true;
         _cam.orthographicSize = viewRadius;
         _cam.nearClipPlane = 0.1f;
-        _cam.farClipPlane = height + 10f;
+        // Far clip generously covers full arena depth (was height+10 = 45 which
+        // was easy to fall short of when the camera is repositioned high above
+        // the arena). 500 is well within ortho-camera precision limits.
+        _cam.farClipPlane = 500f;
         _cam.clearFlags = CameraClearFlags.SolidColor;
-        _cam.backgroundColor = new Color(0.08f, 0.10f, 0.14f, 1f);
-        _cam.cullingMask = ~0; // render all layers
+        // Slate-blue clear so even unrendered slivers read as "map area" rather
+        // than the previous near-black rectangle (root cause of "dark panel with
+        // markers only" report).
+        _cam.backgroundColor = new Color(0.18f, 0.22f, 0.28f, 1f);
+        _cam.cullingMask = ~0; // render all layers — explicit catch-all
         _cam.depth = -2;       // render before main cameras
         _cam.enabled = false;  // HUDManager calls Render() manually — disable auto rendering
     }
@@ -60,8 +70,12 @@ public class MinimapCameraFollow : MonoBehaviour
             if (_hasArenaBounds)
             {
                 Vector3 center = _arenaBounds.center;
-                transform.position = new Vector3(center.x, height, center.z);
+                // Always sit ABOVE the arena's top extent + the configured height
+                // so ceilings/catwalks don't occlude the floor layout.
+                float topY = _arenaBounds.max.y + height;
+                transform.position = new Vector3(center.x, topY, center.z);
                 _cam.orthographicSize = Mathf.Max(24f, Mathf.Max(_arenaBounds.extents.x, _arenaBounds.extents.z) + fullMapPadding);
+                _cam.farClipPlane = Mathf.Max(500f, (topY - _arenaBounds.min.y) + 50f);
             }
             else
             {
@@ -75,7 +89,10 @@ public class MinimapCameraFollow : MonoBehaviour
         lockToArenaCenter = false;
         _cam.orthographicSize = viewRadius;
         if (playerTarget != null)
-            transform.position = new Vector3(playerTarget.position.x, height, playerTarget.position.z);
+        {
+            float topY = _hasArenaBounds ? _arenaBounds.max.y + height : playerTarget.position.y + height;
+            transform.position = new Vector3(playerTarget.position.x, topY, playerTarget.position.z);
+        }
     }
 
     /// <summary>

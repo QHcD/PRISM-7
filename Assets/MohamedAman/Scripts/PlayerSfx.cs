@@ -20,6 +20,24 @@ public class PlayerSfx : MonoBehaviour
 {
     public static PlayerSfx Instance { get; private set; }
 
+    /// <summary>
+    /// Auto-attach a PlayerSfx component to the local player object after every
+    /// scene load. The Player.prefab does NOT have PlayerSfx baked in, so
+    /// without this hook the runtime never instantiated one and TickFootsteps
+    /// (already called from PlayerController) reached a null instance.
+    /// </summary>
+    [RuntimeInitializeOnLoadMethod(UnityEngine.RuntimeInitializeLoadType.AfterSceneLoad)]
+    private static void AutoAttach()
+    {
+        UnityEngine.SceneManagement.SceneManager.sceneLoaded += (scene, _) =>
+        {
+            GameObject p = GameObject.FindWithTag("Player");
+            if (p == null) return;
+            if (p.GetComponent<PlayerSfx>() == null)
+                p.AddComponent<PlayerSfx>();
+        };
+    }
+
     [Header("Clips (assign in Inspector)")]
     [Tooltip("Plays once on jump key press.")]
     public AudioClip jumpClip;
@@ -72,6 +90,34 @@ public class PlayerSfx : MonoBehaviour
             UIClickAudio.Instance.SetClickClip(uiClickOverride);
         if (uiHoverOverride != null && UIClickAudio.Instance != null)
             UIClickAudio.Instance.SetHoverClip(uiHoverOverride);
+
+        // Resources fallback so footsteps are audible even when the prefab
+        // never had a clip wired up in the Inspector. Looks for the file
+        // copied into Assets/MohamedAman/Resources/footstep.wav.
+        if (footstepClip == null)
+            footstepClip = Resources.Load<AudioClip>("footstep");
+
+        // Audible default — was 0.4 (mostly 3D), so footsteps barely registered
+        // when the camera was a couple of metres from the player. 0.1 keeps
+        // a hint of spatial falloff while ensuring footsteps are reliably heard.
+        if (_source != null) _source.spatialBlend = 0.1f;
+        _cachedController = GetComponent<CharacterController>()
+                         ?? GetComponentInChildren<CharacterController>(true);
+    }
+
+    private CharacterController _cachedController;
+
+    // Self-driving fallback: if no external system calls TickFootsteps every
+    // frame, drive the cadence from CharacterController state directly. This
+    // ensures footsteps play even if the movement script hookup is missing or
+    // gated by some condition. Idempotent vs. external TickFootsteps calls —
+    // both paths share the same _stepTimer.
+    private void Update()
+    {
+        if (_cachedController == null) return;
+        Vector3 horiz = _cachedController.velocity; horiz.y = 0f;
+        bool sprinting = horiz.magnitude > 4.5f;
+        TickFootsteps(_cachedController.isGrounded, sprinting, horiz.magnitude);
     }
 
     private void OnDestroy()

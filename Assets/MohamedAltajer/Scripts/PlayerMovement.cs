@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 /// <summary>
 /// Focused third-person movement controller.
@@ -54,11 +55,25 @@ public class PlayerMovement : MonoBehaviour
 
     private void Update()
     {
-        // ── STEP 1: Read raw input ────────────────────────────────────────────
-        // GetAxisRaw returns exactly -1, 0, or 1 with no Unity smoothing.
-        // This gives instant response the moment a key is pressed or released.
-        float horizontal = Input.GetAxisRaw("Horizontal"); // A / D  or ← →
-        float vertical   = Input.GetAxisRaw("Vertical");   // W / S  or ↑ ↓
+        float horizontal = 0f;
+        float vertical = 0f;
+        
+        Keyboard kb = Keyboard.current;
+        if (kb != null)
+        {
+            if (kb.aKey.isPressed || kb.leftArrowKey.isPressed) horizontal -= 1f;
+            if (kb.dKey.isPressed || kb.rightArrowKey.isPressed) horizontal += 1f;
+            if (kb.sKey.isPressed || kb.downArrowKey.isPressed) vertical -= 1f;
+            if (kb.wKey.isPressed || kb.upArrowKey.isPressed) vertical += 1f;
+        }
+
+        Gamepad gp = Gamepad.current;
+        if (gp != null)
+        {
+            Vector2 stick = gp.leftStick.ReadValue();
+            horizontal += stick.x;
+            vertical += stick.y;
+        }
 
         // ── STEP 2: Build and normalise the movement vector ───────────────────
         // Combine axes into a flat (Y = 0) world-space direction vector.

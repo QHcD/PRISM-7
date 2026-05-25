@@ -624,7 +624,7 @@ public static class EnemySpawnGeometry
 
         target.position = preferred;
         if (agent != null)
-            agent.enabled = true;
+            agent.enabled = false;
         return false;
     }
 

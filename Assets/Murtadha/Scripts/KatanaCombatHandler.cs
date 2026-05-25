@@ -1,5 +1,6 @@
 using System.Collections;
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 #if PUN_2_OR_NEWER
 using Photon.Pun;
@@ -108,8 +109,7 @@ public class KatanaCombatHandler : MonoBehaviour
 
     private void Update()
     {
-        // Input is only read for the LOCAL, human-controlled player.
-        if (!isAI && IsLocallyOwned() && _canAttack && Input.GetMouseButtonDown(0))
+        if (!isAI && IsLocallyOwned() && _canAttack && Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
             TriggerAttack();
     }
 

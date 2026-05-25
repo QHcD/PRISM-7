@@ -41,6 +41,9 @@ public class NetworkPlayerSpawner : MonoBehaviour
         UnityEngine.SceneManagement.Scene scene,
         UnityEngine.SceneManagement.LoadSceneMode mode)
     {
+        if (scene.name == "MainMenu")
+            return;
+
         if (!MultiplayerMode.IsMultiplayer)
             return;
 
@@ -58,8 +61,23 @@ public class NetworkPlayerSpawner : MonoBehaviour
         new GameObject("NetworkPlayerSpawner").AddComponent<NetworkPlayerSpawner>();
     }
 
+    private void Awake()
+    {
+        if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "MainMenu")
+        {
+            Debug.Log("[NetworkPlayerSpawner] MainMenu scene detected in Awake. Self-destroying.");
+            Destroy(this);
+            return;
+        }
+    }
+
     private void Start()
     {
+        if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "MainMenu")
+        {
+            Destroy(this);
+            return;
+        }
         MultiplayerMode.SetMultiplayer();
         Application.runInBackground = true;
         MatchInitializer.EnsureExists();
@@ -129,6 +147,8 @@ public class NetworkPlayerSpawner : MonoBehaviour
 #if PUN_2_OR_NEWER
     public override void OnJoinedRoom()
     {
+        if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "MainMenu")
+            return;
         EnsureLocalNicknameFallback();
         RegisterPhotonPlayersForLeaderboard();
         QueueSpawnLocalPlayer();
@@ -136,11 +156,19 @@ public class NetworkPlayerSpawner : MonoBehaviour
 
     public override void OnPlayerEnteredRoom(Player newPlayer)
     {
+        if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "MainMenu")
+            return;
         RegisterPhotonPlayerForLeaderboard(newPlayer);
     }
 
     private void SpawnLocalPlayer()
     {
+        if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "MainMenu")
+        {
+            Debug.Log("[PhotonSpawn] Blocked in MainMenu.");
+            return;
+        }
+
         if (FindOwnedPlayer() != null)
             return;
 

@@ -90,6 +90,14 @@ public class EnemyTacticalActions : MonoBehaviour
 
     private void Awake()
     {
+        // Tactical maneuvers (roll / slide / prone / jumpover / sprint-boost
+        // / dodge) are PLAYER-ONLY. Enemies must just navigate, chase, rotate,
+        // attack, and die. Disable this component immediately so its Update
+        // never decides to trigger any maneuver and any animator triggers it
+        // would have set stay clean.
+        enabled = false;
+        return;
+#pragma warning disable CS0162
         _enemy = GetComponent<EnemyController>();
         _agent = GetComponent<NavMeshAgent>();
         _anim = GetComponentInChildren<Animator>();
@@ -119,6 +127,7 @@ public class EnemyTacticalActions : MonoBehaviour
         }
 
         _nextDecisionTime = Time.time + Random.Range(0f, decisionInterval);
+#pragma warning restore CS0162
     }
 
     private void OnEnable()

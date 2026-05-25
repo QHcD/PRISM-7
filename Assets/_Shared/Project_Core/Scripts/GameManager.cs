@@ -168,6 +168,21 @@ public class GameManager : MonoBehaviour
         PendingMenuScreen = MenuScreen.MainMenu;
     }
 
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+    private static void VerifyStartupScene()
+    {
+        string sceneName = SceneManager.GetActiveScene().name;
+        Debug.Log($"[Startup] Active scene on boot: {sceneName}");
+
+#if !UNITY_EDITOR
+        if (sceneName == "GameScene")
+        {
+            Debug.Log("[Startup] Force loading MainMenu scene on standalone build boot.");
+            SceneManager.LoadScene("MainMenu");
+        }
+#endif
+    }
+
     // ════════════════════════════════════════════════════════════════════════
     //  STRICT SINGLETON — "Destroyer" Pattern
     //  CRITICAL: Any duplicate GameManager (prefab leftover, scene copy, or
@@ -515,7 +530,15 @@ public class GameManager : MonoBehaviour
         => Mathf.Clamp(PlayerPrefs.GetInt("ContinueLevel", currentLevel), 1, TotalLevels);
 
     public bool IsNewPlayer()
-        => !PlayerPrefs.HasKey("ContinueLevel") && !PlayerPrefs.HasKey("UnlockedLevels");
+    {
+        bool hasContinueLevel = PlayerPrefs.HasKey("ContinueLevel") && PlayerPrefs.GetInt("ContinueLevel", 1) > 1;
+        bool hasUnlockedLevels = PlayerPrefs.HasKey("UnlockedLevels") && PlayerPrefs.GetInt("UnlockedLevels", 1) > 1;
+        bool hasCredits = SessionManager.Instance != null && SessionManager.Instance.Credits > 0;
+        bool hasSkins = SessionManager.Instance != null && SessionManager.Instance.UnlockedSkinIds.Count > 1;
+        bool hasWeapons = SessionManager.Instance != null && SessionManager.Instance.UnlockedWeaponIds.Count > 1;
+
+        return !(hasContinueLevel || hasUnlockedLevels || hasCredits || hasSkins || hasWeapons);
+    }
 
     // ── Game flow ─────────────────────────────────────────────���───────────────
     public void StartRun(int level = 1)
@@ -928,7 +951,9 @@ public class GameManager : MonoBehaviour
     }
 
     public int GetUnlockedLevelCount()
-        => TotalLevels; // Level gating removed — all levels available from the start.
+    {
+        return Mathf.Clamp(PlayerPrefs.GetInt("UnlockedLevels", 1), 1, TotalLevels);
+    }
 
     private void ResetLevelState()
     {

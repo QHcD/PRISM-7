@@ -2,6 +2,7 @@ using Unity.AI.Navigation;
 using UnityEngine;
 using UnityEngine.AI;
 using UnityEngine.SceneManagement;
+using UnityEngine.UI;
 #if UNITY_EDITOR
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -11,7 +12,8 @@ using UnityEditor.SceneManagement;
 public class LevelBuilder : MonoBehaviour
 {
     private const string RuntimeObjectName  = "__LevelBuilderRuntime";
-    private const string GameplayRootName   = "GameplayRoot";
+    private const string GameplayRootName   = "GENERATED_MAP_RUNTIME";
+    private const string LegacyGameplayRootName = "GameplayRoot";
     private const string ArenaRootName      = "UrbanArenaRoot";
     private const string EnemyRootName      = "EnemiesRoot";
     private const string MinimapCameraName  = "MinimapCamera";
@@ -19,7 +21,20 @@ public class LevelBuilder : MonoBehaviour
     private static readonly Vector3 SafeFallbackSpawn = new Vector3(0f, 1f, 0f);
     private static LevelBuilder instance;
     private bool _navMeshReady;
+    private Bounds _assembledWarehouseBounds;
+    private bool _hasAssembledWarehouseBounds;
+    private Bounds _sciFiProxyBounds;
+    private bool _hasSciFiProxyBounds;
+    private NavSourceDiagnostics _lastNavSourceDiagnostics;
+    private static NavMeshDataInstance _sciFiNavMeshDataInstance;
     private static bool _multiplayerBuildComplete;
+
+    private struct NavSourceDiagnostics
+    {
+        public int sources;
+        public int walkableSources;
+        public string zeroAreaReason;
+    }
 #if UNITY_EDITOR
     private static bool _editorPreviewQueued;
     private static double _lastEditorPreviewTime;
@@ -310,6 +325,12 @@ public class LevelBuilder : MonoBehaviour
 
         Debug.Log($"[LevelBuilder] HandleScene '{scene.name}' on frame {Time.frameCount}");
 
+        if (scene.name == "MainMenu")
+        {
+            Debug.Log("[LevelBuilder] MainMenu detected in HandleScene. Returning immediately.");
+            return;
+        }
+
         if (scene.name == "GameScene")
         {
             Debug.Log("[LevelBuilder] Building GameScene (synchronous)...");
@@ -320,11 +341,6 @@ public class LevelBuilder : MonoBehaviour
             Debug.Log("[MPBuild] running in build/editor = " + (Application.isEditor ? "editor" : "build"));
             Debug.Log("[LevelBuilder] Building MultiplayerGameScene map (synchronous)...");
             BuildMultiplayerScene();
-        }
-        else if (scene.name == "MainMenu")
-        {
-            _multiplayerBuildComplete = false;
-            CleanupMainMenu();
         }
     }
 
@@ -354,6 +370,7 @@ public class LevelBuilder : MonoBehaviour
         _multiplayerBuildComplete = false;
         try
         {
+            CleanupGeneratedRuntimeObjects();
             Transform gameplayRoot = GetOrCreateRoot(GameplayRootName);
             Transform arenaRoot = GetOrCreateChildRoot(gameplayRoot, ArenaRootName);
             gameplayRoot.gameObject.SetActive(true);
@@ -361,7 +378,8 @@ public class LevelBuilder : MonoBehaviour
             ClearChildren(arenaRoot);
 
             BuildArena(arenaRoot);
-            StabilizeGround(arenaRoot);
+            if (!useSciFiArena)
+                StabilizeGround(arenaRoot);
             EnsureIndustrialDoorsInteractable(arenaRoot);
             EnsureMinimapCamera();
             _navMeshReady = Application.isPlaying && TryBuildNavMesh();
@@ -406,6 +424,7 @@ public class LevelBuilder : MonoBehaviour
             // over from a previous build so the new map spawns into a clean
             // scene (fixes the "old map still visible in Editor" bug).
             ClearExistingLevel();
+            CleanupGeneratedRuntimeObjects();
 
             Transform gameplayRoot = GetOrCreateRoot(GameplayRootName);
             Transform arenaRoot    = GetOrCreateChildRoot(gameplayRoot, ArenaRootName);
@@ -417,15 +436,23 @@ public class LevelBuilder : MonoBehaviour
             GameObject plane = GameObject.Find("Plane");
             if (plane != null)
             {
-                plane.SetActive(true);
-                plane.transform.position   = Vector3.zero;
-                plane.transform.localScale = new Vector3(6f, 1f, 6f);
-                HideNavOnlySurface(plane);
+                if (useSciFiArena)
+                {
+                    plane.SetActive(false);
+                }
+                else
+                {
+                    plane.SetActive(true);
+                    plane.transform.position   = Vector3.zero;
+                    plane.transform.localScale = new Vector3(6f, 1f, 6f);
+                    HideNavOnlySurface(plane);
+                }
             }
 
             BuildArena(arenaRoot);
             // EnsureSceneGroundVisible skipped — industrial map has its own ground
-            StabilizeGround(arenaRoot);
+            if (!useSciFiArena)
+                StabilizeGround(arenaRoot);
             EnsureIndustrialDoorsInteractable(arenaRoot);
             Debug.Log("[LevelBuilder] Step 3: Arena built + floor stabilised");
 
@@ -438,7 +465,7 @@ public class LevelBuilder : MonoBehaviour
             _navMeshReady = Application.isPlaying && TryBuildNavMesh();
             Debug.Log(_navMeshReady
                 ? "[LevelBuilder] Step 6: NavMesh built"
-                : "[LevelBuilder] Step 6: NavMesh skipped; using fallback spawn");
+                : "[LevelBuilder] Step 6: NavMesh skipped; enemy spawning requires valid NavMesh");
 
             ConfigurePlayer();
             Debug.Log("[LevelBuilder] Step 7: Player configured");
@@ -449,7 +476,13 @@ public class LevelBuilder : MonoBehaviour
                 (GameManager.Instance != null ? GameManager.Instance.enemiesRemaining.ToString() : "?"));
 
             EnsureHud();
+            ResetRuntimeUiAnchors();
             EnsurePauseMenu();
+            int spawnedSummary = GameManager.Instance != null ? GameManager.Instance.enemiesRemaining : 0;
+            Debug.Log($"[StabilizationSummary] missingScriptsRemoved=editor-generated-scan NavMeshRebuilt={_navMeshReady} " +
+                      $"NavMeshCoverage={EstimateNavMeshCoverageArea():F1}m2 spawnAnchorsValid={spawnedSummary > 0} " +
+                      $"runtimeSystemsRemoved=UniversalCeilingSealer/ducts/beams/patch-ceilings " +
+                      $"generatedRoot={GameplayRootName} enemiesSpawned={spawnedSummary}");
             Debug.Log("[LevelBuilder] ===== BUILD COMPLETE =====");
         }
         catch (System.Exception e)
@@ -516,7 +549,9 @@ public class LevelBuilder : MonoBehaviour
             door.openOnStart         = false;
             door.openOnPlayerTrigger = false;
             door.interactiveToggle   = true;
-            passThrough.hideOnOpen    = true;
+            // Don't hide door visuals — keep mesh visible; only disable
+            // colliders so characters can pass through.
+            passThrough.hideOnOpen    = false;
 
             int envLayer = LayerMask.NameToLayer("Environment");
             if (envLayer >= 0)
@@ -589,20 +624,26 @@ public class LevelBuilder : MonoBehaviour
         // dynamically measures the map bounds, and grounds the FBX visuals at Y=0.
         LoadFbxMap(arenaRoot, map);
 
-        // Physics floor, kill volume, fog — sized dynamically to the loaded map's bounds.
-        CreatePhysicsBounds(arenaRoot);
+        // SciFiArena is authored from complete warehouse demo modules; do not
+        // add visual closure/backfill/edge blockers over it.
+        if (!useSciFiArena)
+            CreatePhysicsBounds(arenaRoot);
 
         Transform fbx = arenaRoot.Find("FbxMap");
-        ArenaVisualBounds.Install(arenaRoot, arenaHalfSize, fbx, debugArenaVisualBounds || debugSpawnValidation);
+        if (!useSciFiArena)
+            ArenaVisualBounds.Install(arenaRoot, arenaHalfSize, fbx, debugArenaVisualBounds || debugSpawnValidation);
 
         if (fbx != null)
         {
-            MapAttachedPropsPreserver.Capture(fbx);
-            EnvironmentGroundAnchor.Install(fbx, debugArenaVisualBounds || debugSpawnValidation);
-            MapAttachedPropsPreserver.Restore(fbx);
+            if (!useSciFiArena)
+            {
+                MapAttachedPropsPreserver.Capture(fbx);
+                EnvironmentGroundAnchor.Install(fbx, debugArenaVisualBounds || debugSpawnValidation);
+                MapAttachedPropsPreserver.Restore(fbx);
+            }
         }
 
-        Transform closure = arenaRoot.Find("ArenaVisualClosure");
+        Transform closure = !useSciFiArena ? arenaRoot.Find("ArenaVisualClosure") : null;
         if (closure != null)
             MapVisibilityStabilizer.Install(closure, debugArenaVisualBounds || debugSpawnValidation);
     }
@@ -843,9 +884,8 @@ public class LevelBuilder : MonoBehaviour
 
         if (mapPrefab == null && useSciFiArena)
         {
-            Debug.LogWarning("[LevelBuilder] SciFi arena prefab not found at Resources/" + resourcePath +
-                ".\nRun  Tools ▸ PRISM-7 ▸ Build SciFi Arena Prefab  in the Editor (exit Play mode first), then press Play again.");
-            CreateProceduralFallback(parent, map);
+            Debug.LogError("[LevelBuilder] SciFi arena prefab not found at Resources/" + resourcePath +
+                ". No procedural cube fallback will be generated. Run Tools > PRISM-7 > Build SciFi Arena Prefab in the Editor, then press Play again.");
             return;
         }
 
@@ -861,8 +901,19 @@ public class LevelBuilder : MonoBehaviour
         mapInstance.name = "FbxMap";
         mapInstance.transform.localPosition = Vector3.zero;
         mapInstance.transform.localRotation = Quaternion.identity;
+        mapInstance.transform.localScale = Vector3.one;
+#if UNITY_EDITOR
+        RemoveMissingScriptsInHierarchy(mapInstance);
+#endif
         TagObjectIfDefined(mapInstance, "Map");
         TagHierarchyByName(mapInstance.transform);
+
+        if (useSciFiArena)
+        {
+            ConfigureSciFiWarehouseAssembly(mapInstance.transform);
+        }
+        else
+        {
 
         // Compute overall and road-only bounds of the loaded FBX map renderers
         Bounds overallBounds = new Bounds(Vector3.zero, Vector3.zero);
@@ -949,6 +1000,7 @@ public class LevelBuilder : MonoBehaviour
                 Debug.Log($"[LevelBuilder] DynBounds: Centered and grounded FBX map at {mapInstance.transform.position}, arenaHalfSize dynamically set to {arenaHalfSize}");
             }
         }
+        }
 
         // ── Activate EVERYTHING in the industrial map ──────────────────────
         // The prefab may have been captured with some objects inactive.
@@ -959,8 +1011,14 @@ public class LevelBuilder : MonoBehaviour
         foreach (Renderer rend in mapInstance.GetComponentsInChildren<Renderer>(true))
             rend.enabled = true;
 
-        RemoveUnwantedMapProps(mapInstance.transform);
-        MapAtmosphereCleanup.RemoveFromHierarchy(mapInstance.transform);
+        if (useSciFiArena)
+            ConfigureSciFiWarehouseAssembly(mapInstance.transform);
+
+        if (!useSciFiArena)
+        {
+            RemoveUnwantedMapProps(mapInstance.transform);
+            MapAtmosphereCleanup.RemoveFromHierarchy(mapInstance.transform);
+        }
 
         // ── Remove cameras / audio listeners that compete with ours ────────
         foreach (Camera embeddedCam in mapInstance.GetComponentsInChildren<Camera>(true))
@@ -977,39 +1035,247 @@ public class LevelBuilder : MonoBehaviour
         // Replacing materials would wipe all industrial textures and make the
         // map appear as flat grey geometry.
 
-        // ── Add colliders only where none exist (for NavMesh + physics) ────
-        foreach (MeshFilter mf in mapInstance.GetComponentsInChildren<MeshFilter>(true))
+        // ── Add colliders only where none exist (legacy industrial map only).
+        // SciFiArena ships prebuilt proxy colliders from the editor builder.
+        if (!useSciFiArena)
         {
-            if (mf.GetComponent<Collider>() != null) continue;
-            if (mf.sharedMesh == null) continue;
+            foreach (MeshFilter mf in mapInstance.GetComponentsInChildren<MeshFilter>(true))
+            {
+                if (mf.GetComponent<Collider>() != null) continue;
+                if (mf.sharedMesh == null) continue;
 
-            if (mf.sharedMesh.isReadable)
-            {
-                MeshCollider mc = mf.gameObject.AddComponent<MeshCollider>();
-                mc.sharedMesh = mf.sharedMesh;
-                mc.convex = false;
-            }
-            else
-            {
-                BoxCollider box = mf.gameObject.AddComponent<BoxCollider>();
-                box.center = mf.sharedMesh.bounds.center;
-                box.size   = mf.sharedMesh.bounds.size;
+                if (mf.sharedMesh.isReadable)
+                {
+                    MeshCollider mc = mf.gameObject.AddComponent<MeshCollider>();
+                    mc.sharedMesh = mf.sharedMesh;
+                    mc.convex = false;
+                }
+                else
+                {
+                    BoxCollider box = mf.gameObject.AddComponent<BoxCollider>();
+                    box.center = mf.sharedMesh.bounds.center;
+                    box.size   = mf.sharedMesh.bounds.size;
+                }
             }
         }
 
         EnsureIndustrialDoorsInteractable(mapInstance.transform);
 
-        MapAttachedPropsPreserver.Capture(mapInstance.transform);
-        EnvironmentGroundAnchor.Install(mapInstance.transform, debugArenaVisualBounds || debugSpawnValidation);
-        MapAttachedPropsPreserver.Restore(mapInstance.transform);
+        if (!useSciFiArena)
+        {
+            MapAttachedPropsPreserver.Capture(mapInstance.transform);
+            EnvironmentGroundAnchor.Install(mapInstance.transform, debugArenaVisualBounds || debugSpawnValidation);
+            MapAttachedPropsPreserver.Restore(mapInstance.transform);
+        }
 
+        if (!useSciFiArena)
+        {
             MapStructureStabilizer.Install(mapInstance.transform, debugArenaVisualBounds || debugSpawnValidation);
-        MapVisibilityStabilizer.Install(mapInstance.transform, debugArenaVisualBounds || debugSpawnValidation);
+            MapVisibilityStabilizer.Install(mapInstance.transform, debugArenaVisualBounds || debugSpawnValidation);
+        }
 
-        EnemySpawnGeometry.RefreshStreetSpawnAnchors(mapInstance.transform);
-        Debug.Log($"[LevelBuilder] Street spawn anchors: {EnemySpawnGeometry.StreetSpawnAnchorCount}");
+        if (!useSciFiArena)
+        {
+            EnemySpawnGeometry.RefreshStreetSpawnAnchors(mapInstance.transform);
+            Debug.Log($"[LevelBuilder] Street spawn anchors: {EnemySpawnGeometry.StreetSpawnAnchorCount}");
+        }
+        LogWarehouseModuleSummary(mapInstance.transform);
 
         Debug.Log($"[LevelBuilder] Industrial map loaded and fully activated: {resourcePath}");
+    }
+
+    private void ConfigureSciFiWarehouseAssembly(Transform mapRoot)
+    {
+        _hasAssembledWarehouseBounds = false;
+        _hasSciFiProxyBounds = false;
+        if (mapRoot == null) return;
+
+        Transform modules = mapRoot.Find("DemoWarehouseModules");
+        Transform boundsRoot = modules != null ? modules : mapRoot;
+
+        mapRoot.position = Vector3.zero;
+        mapRoot.rotation = Quaternion.identity;
+        mapRoot.localScale = Vector3.one;
+        if (modules != null)
+        {
+            modules.localPosition = Vector3.zero;
+            modules.localRotation = Quaternion.identity;
+            modules.localScale = Vector3.one;
+        }
+
+        if (!TryComputeWarehouseGeometryBounds(boundsRoot, out Bounds bounds))
+        {
+            Debug.LogError("[LevelBuilder] SciFi warehouse bounds failed: no final warehouse geometry found.");
+            return;
+        }
+
+        Bounds groundBounds = bounds;
+        bool hasWalkableGround = TryComputeWarehouseWalkableBounds(boundsRoot, out groundBounds);
+        float groundY = hasWalkableGround ? groundBounds.min.y : bounds.min.y;
+
+        // The prefab builder already centers X/Z as one coherent assembly. At
+        // runtime only correct vertical drift so the lowest walkable floor is Y=0.
+        if (Mathf.Abs(groundY) > 0.02f)
+        {
+            mapRoot.position += Vector3.up * -groundY;
+            TryComputeWarehouseGeometryBounds(boundsRoot, out bounds);
+            if (hasWalkableGround)
+                TryComputeWarehouseWalkableBounds(boundsRoot, out groundBounds);
+        }
+
+        _assembledWarehouseBounds = bounds;
+        _hasAssembledWarehouseBounds = true;
+        Transform proxyRoot = mapRoot.Find("SciFiNavMeshProxyColliders");
+        if (TryComputeColliderBounds(proxyRoot, out _sciFiProxyBounds))
+            _hasSciFiProxyBounds = true;
+        arenaHalfSize = Mathf.Max(bounds.extents.x, bounds.extents.z) + 1f;
+
+        Debug.Log($"[LevelBuilder] SciFi warehouse final bounds center={bounds.center} size={bounds.size} walkableGroundY={(hasWalkableGround ? groundBounds.min.y : bounds.min.y):F2} arenaHalfSize={arenaHalfSize:F1}");
+    }
+
+    private static bool TryComputeColliderBounds(Transform root, out Bounds bounds)
+    {
+        bounds = default;
+        bool hasBounds = false;
+        if (root == null) return false;
+
+        Collider[] colliders = root.GetComponentsInChildren<Collider>(true);
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider c = colliders[i];
+            if (c == null || c.isTrigger || !c.enabled)
+                continue;
+            if (!hasBounds)
+            {
+                bounds = c.bounds;
+                hasBounds = true;
+            }
+            else
+            {
+                bounds.Encapsulate(c.bounds);
+            }
+        }
+
+        return hasBounds;
+    }
+
+    private static bool TryComputeWarehouseGeometryBounds(Transform root, out Bounds bounds)
+    {
+        bounds = default;
+        bool hasBounds = false;
+        if (root == null) return false;
+
+        Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer rend = renderers[i];
+            if (rend == null || rend is ParticleSystemRenderer || rend is TrailRenderer || rend is LineRenderer)
+                continue;
+            if (ShouldIgnoreWarehouseBoundsRenderer(rend))
+                continue;
+
+            if (!hasBounds)
+            {
+                bounds = rend.bounds;
+                hasBounds = true;
+            }
+            else
+            {
+                bounds.Encapsulate(rend.bounds);
+            }
+        }
+
+        return hasBounds;
+    }
+
+    private static bool TryComputeWarehouseWalkableBounds(Transform root, out Bounds bounds)
+    {
+        bounds = default;
+        bool hasBounds = false;
+        if (root == null) return false;
+
+        Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer rend = renderers[i];
+            if (rend == null || rend is ParticleSystemRenderer || rend is TrailRenderer || rend is LineRenderer)
+                continue;
+            if (!IsSciFiWalkableSurfaceName(rend.name) && !IsLikelyWarehouseFloorRenderer(rend))
+                continue;
+
+            if (!hasBounds)
+            {
+                bounds = rend.bounds;
+                hasBounds = true;
+            }
+            else
+            {
+                bounds.Encapsulate(rend.bounds);
+            }
+        }
+
+        Collider[] colliders = root.GetComponentsInChildren<Collider>(true);
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider col = colliders[i];
+            if (col == null || col.isTrigger)
+                continue;
+            if (!IsSciFiWalkableSurfaceName(col.name) && !IsLikelyWarehouseFloorBounds(col.bounds))
+                continue;
+
+            if (!hasBounds)
+            {
+                bounds = col.bounds;
+                hasBounds = true;
+            }
+            else
+            {
+                bounds.Encapsulate(col.bounds);
+            }
+        }
+
+        return hasBounds;
+    }
+
+    private static bool IsLikelyWarehouseFloorRenderer(Renderer renderer)
+    {
+        return renderer != null && IsLikelyWarehouseFloorBounds(renderer.bounds);
+    }
+
+    private static bool IsLikelyWarehouseFloorBounds(Bounds b)
+    {
+        float horizontal = Mathf.Max(b.size.x, b.size.z);
+        return horizontal >= 2.5f && b.size.y <= Mathf.Max(0.6f, horizontal * 0.08f);
+    }
+
+    private static bool ShouldIgnoreWarehouseBoundsRenderer(Renderer renderer)
+    {
+        if (renderer == null) return true;
+
+        for (Transform t = renderer.transform; t != null; t = t.parent)
+        {
+            string n = t.name.ToLowerInvariant();
+            if (n.Contains("spawnpoints") || n.Contains("player") || n.Contains("camera")
+                || n.Contains("audio") || n.Contains("backgroundmusic") || n.Contains("dust")
+                || n.Contains("particle") || n.Contains("light source"))
+                return true;
+        }
+
+        string lower = renderer.name.ToLowerInvariant();
+        return lower.Contains("skybox") || lower.Contains("reflection") || lower.Contains("invisible");
+    }
+
+    private static void LogWarehouseModuleSummary(Transform mapRoot)
+    {
+        if (mapRoot == null) return;
+
+        Transform modules = mapRoot.Find("DemoWarehouseModules");
+        if (modules == null) return;
+
+        int directModules = modules.childCount;
+        int renderers = modules.GetComponentsInChildren<Renderer>(true).Length;
+        int colliders = modules.GetComponentsInChildren<Collider>(true).Length;
+        Debug.Log($"[LevelBuilder] Warehouse modules reused: {directModules} demo root module(s), renderers={renderers}, colliders={colliders}. Source=Assets/SciFi Warehouse Kit/Demo/Scene/SciFi_Warehouse.unity");
     }
 
     private static void RemoveUnwantedMapProps(Transform mapRoot)
@@ -1106,6 +1372,9 @@ public class LevelBuilder : MonoBehaviour
     /// </summary>
     private static EnemySpawnZone[] BuildEnemySpawnZones(out System.Collections.Generic.List<Vector3> flatAnchors)
     {
+        if (Instance != null && Instance.useSciFiArena && TryBuildSciFiEnemySpawnZones(out EnemySpawnZone[] sciFiZones, out flatAnchors))
+            return sciFiZones;
+
         const float y = 0.01f;
         float currentHalfSize = Instance != null ? Instance.arenaHalfSize : 80f;
         float arenaR = currentHalfSize * 0.82f;
@@ -1187,6 +1456,48 @@ public class LevelBuilder : MonoBehaviour
         _gizmoSpawnZones = zoneArray;
 #endif
         return zoneArray;
+    }
+
+    private static bool TryBuildSciFiEnemySpawnZones(
+        out EnemySpawnZone[] zones,
+        out System.Collections.Generic.List<Vector3> flatAnchors)
+    {
+        zones = null;
+        flatAnchors = new System.Collections.Generic.List<Vector3>(32);
+
+        GameObject arena = GameObject.Find("FbxMap") ?? GameObject.Find("SciFiArena") ?? GameObject.Find("SciFiArena(Clone)");
+        if (arena == null) return false;
+
+        Transform spawnRoot = arena.transform.Find("SpawnPoints");
+        if (spawnRoot == null) return false;
+
+        var all = new System.Collections.Generic.List<Vector3>(32);
+        Transform[] transforms = spawnRoot.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < transforms.Length; i++)
+        {
+            Transform t = transforms[i];
+            if (t == null || t == spawnRoot) continue;
+            if (!t.name.StartsWith("EnemySpawn_", System.StringComparison.OrdinalIgnoreCase)) continue;
+            if (TryFindNearestSciFiNavMeshPoint(t.position, 30f, out Vector3 navPoint))
+                all.Add(ProjectSciFiPointToSupport(navPoint));
+        }
+
+        if (all.Count == 0) return false;
+
+        zones = new EnemySpawnZone[SpawnZoneCount];
+        for (int i = 0; i < zones.Length; i++)
+            zones[i] = new EnemySpawnZone("SciFi_" + i);
+
+        for (int i = 0; i < all.Count; i++)
+        {
+            zones[i % zones.Length].Anchors.Add(all[i]);
+            flatAnchors.Add(all[i]);
+        }
+
+#if UNITY_EDITOR
+        _gizmoSpawnZones = zones;
+#endif
+        return true;
     }
 
     private static System.Collections.Generic.List<Vector3> BuildDistributedArenaAnchors()
@@ -1295,6 +1606,9 @@ public class LevelBuilder : MonoBehaviour
         bool requirePathFromPlayer,
         bool requirePlayerMinDistance)
     {
+        if (!IsInsideAssembledWarehouseBounds(cand))
+            return false;
+
         // Reject rooftops / containers / raised walkways — even if NavMesh said
         // they're reachable, enemies stranded up there spin and never engage.
         if (IsAboveArenaFloor(cand, playerNavPos))
@@ -1342,6 +1656,22 @@ public class LevelBuilder : MonoBehaviour
         for (int a = 0; a < zone.Anchors.Count; a++)
         {
             Vector3 anchor = zone.Anchors[(enemyIndex + a) % zone.Anchors.Count];
+            if (Instance != null && Instance.useSciFiArena)
+            {
+                if (!TryFindNearestSciFiNavMeshPoint(anchor, 24f, out Vector3 navPoint))
+                    continue;
+                Vector3 sciFiCand = ProjectSciFiPointToSupport(navPoint);
+                if (requirePlayerDist && playerMinSq > 0f && (sciFiCand - playerNavPos).sqrMagnitude < playerMinSq)
+                    continue;
+                if (!PassesEnemySeparationSq(sciFiCand, placedSoFar, minSepSqr))
+                    continue;
+                if (requirePath && !HasPathCompleteFromPlayer(playerNavPos, sciFiCand, path))
+                    continue;
+                spawnWorld = sciFiCand;
+                zoneCounts[zoneIndex]++;
+                return true;
+            }
+
             Vector3 open = FindOpenEnemySpawnAtPreferred(anchor, enemyIndex + a);
             if (!TrySampleNavMeshPreservingAnchor(open, MaxNavSnapHorizontalDrift, out Vector3 cand))
                 continue;
@@ -1414,7 +1744,7 @@ public class LevelBuilder : MonoBehaviour
         return false;
     }
 
-    private Vector3 EmergencyEnemySpawn(
+    private bool TryEmergencyEnemySpawn(
         Vector3 playerNavPos,
         Vector3 rawPlayerPos,
         System.Collections.Generic.List<Vector3> placed,
@@ -1422,13 +1752,35 @@ public class LevelBuilder : MonoBehaviour
         System.Collections.Generic.List<Vector3> flatAnchors,
         NavMeshPath path,
         int enemyIndex,
+        out Vector3 spawnWorld,
         out string usedZone)
     {
+        spawnWorld = default;
         usedZone = "Emergency";
         float fallbackSq = MinEnemySpawnHardFloor * MinEnemySpawnHardFloor;
         float playerMinSq = Mathf.Max(0f, minEnemyToPlayerDistance) * Mathf.Max(0f, minEnemyToPlayerDistance);
         float currentHalfSize = Instance != null ? Instance.arenaHalfSize : 80f;
         float arenaR = currentHalfSize * 0.82f;
+
+        if (Instance != null && Instance.useSciFiArena && flatAnchors != null)
+        {
+            for (int i = 0; i < flatAnchors.Count; i++)
+            {
+                Vector3 anchor = flatAnchors[(enemyIndex + i) % flatAnchors.Count];
+                if (!TryFindNearestSciFiNavMeshPoint(anchor, 30f, out Vector3 navPoint))
+                    continue;
+                Vector3 cand = ProjectSciFiPointToSupport(navPoint);
+                if (playerMinSq > 0f && (cand - playerNavPos).sqrMagnitude < playerMinSq)
+                    continue;
+                if (!PassesEnemySeparationSq(cand, placed, fallbackSq))
+                    continue;
+                if (!HasPathCompleteFromPlayer(playerNavPos, cand, path))
+                    continue;
+                usedZone = "SciFiNavMesh_Emergency";
+                spawnWorld = cand;
+                return true;
+            }
+        }
 
         if (zones != null)
         {
@@ -1456,11 +1808,14 @@ public class LevelBuilder : MonoBehaviour
                     continue;
                 if (!EnemySpawnGeometry.IsValidOutdoorSpawn(cand, playerNavPos, rejectRooftops: true))
                     continue;
+                if (!IsInsideAssembledWarehouseBounds(cand))
+                    continue;
                 if (!HasPathCompleteFromPlayer(playerNavPos, cand, path))
                     continue;
 
                 usedZone = zone.Name + "_Emergency";
-                return cand;
+                spawnWorld = cand;
+                return true;
             }
         }
 
@@ -1482,11 +1837,14 @@ public class LevelBuilder : MonoBehaviour
                 continue;
             if (!EnemySpawnGeometry.IsValidOutdoorSpawn(cand, playerNavPos, rejectRooftops: true))
                 continue;
+            if (!IsInsideAssembledWarehouseBounds(cand))
+                continue;
             if (!HasPathCompleteFromPlayer(playerNavPos, cand, path))
                 continue;
 
             usedZone = "ArenaRing_Emergency";
-            return cand;
+            spawnWorld = cand;
+            return true;
         }
 
         if (flatAnchors != null && flatAnchors.Count > 0)
@@ -1500,31 +1858,45 @@ public class LevelBuilder : MonoBehaviour
                     continue;
                 if (!EnemySpawnGeometry.IsValidOutdoorSpawn(cand, playerNavPos, rejectRooftops: true))
                     continue;
+                if (!IsInsideAssembledWarehouseBounds(cand))
+                    continue;
 
                 usedZone = "AnchorSnap_Emergency";
                 Debug.LogWarning(
-                    $"[LevelBuilder] Enemy spawn emergency fallback (spacing only) index={enemyIndex} pos={cand}",
+                    $"[LevelBuilder] Enemy spawn emergency retry accepted index={enemyIndex} pos={cand}",
                     this);
-                return cand;
+                spawnWorld = cand;
+                return true;
             }
         }
 
-        Vector3 last = SafeFallbackSpawn;
         if (flatAnchors != null && flatAnchors.Count > 0)
         {
             Vector3 anchor = flatAnchors[enemyIndex % flatAnchors.Count];
             if (EnemySpawnGeometry.TryFindValidOutdoorSpawnNear(anchor, playerNavPos, MaxNavSnapHorizontalDrift * 2f,
                     out Vector3 validated))
-                last = validated;
+            {
+                if (!IsInsideAssembledWarehouseBounds(validated))
+                    return false;
+                usedZone = "AnchorValidated_Retry";
+                spawnWorld = validated;
+                return true;
+            }
             else if (TrySampleNavMeshPreservingAnchor(anchor, MaxNavSnapHorizontalDrift * 2f, out Vector3 snapped) &&
                      EnemySpawnGeometry.IsValidOutdoorSpawn(snapped, playerNavPos, rejectRooftops: true))
-                last = snapped;
+            {
+                if (!IsInsideAssembledWarehouseBounds(snapped))
+                    return false;
+                usedZone = "AnchorSnap_Retry";
+                spawnWorld = snapped;
+                return true;
+            }
         }
 
-        Debug.LogWarning(
-            $"[LevelBuilder] Enemy spawn LAST-RESORT fallback index={enemyIndex} pos={last}",
+        Debug.LogError(
+            $"[LevelBuilder] Enemy spawn failed index={enemyIndex}. No valid NavMesh point found; enemy will not be spawned.",
             this);
-        return last;
+        return false;
     }
 
     private void SpawnEnemies(Transform enemyRoot)
@@ -1532,6 +1904,14 @@ public class LevelBuilder : MonoBehaviour
         int   enemyCount  = GameManager.Instance != null ? GameManager.Instance.GetEnemyCount() : 12;
         float enemyDamage = GameManager.Instance != null ? GameManager.Instance.GetEnemyDamage() : 10f;
         int   currentLvl  = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+
+        if (Application.isPlaying && !_navMeshReady)
+        {
+            Debug.LogError("[LevelBuilder] Enemy spawning skipped because runtime NavMesh is not ready. No origin fallback will be used.");
+            if (GameManager.Instance != null)
+                GameManager.Instance.InitializeEnemyCount(0);
+            return;
+        }
 
         PlayerController playerRef = Object.FindFirstObjectByType<PlayerController>();
         Vector3 playerPos = playerRef != null ? playerRef.transform.position : Vector3.zero;
@@ -1545,8 +1925,22 @@ public class LevelBuilder : MonoBehaviour
 
         // Try loading the Crosby enemy model
         GameObject enemyPrefab = Resources.Load<GameObject>("Enemy/Crosby");
+        if (enemyPrefab == null)
+        {
+            Debug.LogError("[LevelBuilder] Enemy prefab Resources/Enemy/Crosby missing. No primitive fallback enemy will be spawned.");
+            if (GameManager.Instance != null)
+                GameManager.Instance.InitializeEnemyCount(0);
+            return;
+        }
 
         EnemySpawnZone[] spawnZones = BuildEnemySpawnZones(out System.Collections.Generic.List<Vector3> arenaAnchors);
+        if (spawnZones == null || spawnZones.Length == 0 || arenaAnchors == null || arenaAnchors.Count == 0)
+        {
+            Debug.LogError("[LevelBuilder] Enemy spawning skipped: no spawn anchors were generated.");
+            if (GameManager.Instance != null)
+                GameManager.Instance.InitializeEnemyCount(0);
+            return;
+        }
         int[] zoneCounts = new int[SpawnZoneCount];
         NavMeshPath spawnPath = new NavMeshPath();
         var placedPositions = new System.Collections.Generic.List<Vector3>(enemyCount);
@@ -1559,38 +1953,28 @@ public class LevelBuilder : MonoBehaviour
                 : arenaAnchors[i % arenaAnchors.Count];
             GameObject enemyObject;
 
-            if (enemyPrefab != null)
-            {
-                // Instantiate the Crosby character model
-                enemyObject = Instantiate(enemyPrefab);
-                enemyObject.transform.SetParent(enemyRoot, false);
-                enemyObject.name = "Enemy_" + (i + 1);
-                enemyObject.transform.position = spawnPos;
-                NormalizeEnemyScale(enemyObject, 1.8f);
+            // Instantiate the Crosby character model. Missing enemy art is a
+            // hard content error; no primitive capsule fallback is used.
+            enemyObject = Instantiate(enemyPrefab);
+            enemyObject.transform.SetParent(enemyRoot, false);
+            enemyObject.name = "Enemy_" + (i + 1);
+            enemyObject.transform.position = spawnPos;
+            NormalizeEnemyScale(enemyObject, 1.8f);
 
-                // Assign animator controller so enemies aren't stuck in T-pose
-                Animator anim = enemyObject.GetComponentInChildren<Animator>();
-                if (anim != null)
-                {
-                    RuntimeAnimatorController animCtrl =
-                        Resources.Load<RuntimeAnimatorController>("Enemy/CrosbyAnimator");
-                    if (animCtrl != null)
-                    {
-                        anim.runtimeAnimatorController = animCtrl;
-                        Debug.Log($"[LevelBuilder] Animator assigned to Enemy_{i + 1}");
-                    }
-                    else
-                    {
-                        Debug.LogWarning("[LevelBuilder] CrosbyAnimator controller not found in Resources/Enemy/");
-                    }
-                }
-            }
-            else
+            // Assign animator controller so enemies aren't stuck in T-pose
+            Animator anim = enemyObject.GetComponentInChildren<Animator>();
+            if (anim != null)
             {
-                // Fallback: coloured capsule
-                enemyObject = CreatePrimitive(enemyRoot, "Enemy_" + (i + 1),
-                    PrimitiveType.Capsule, spawnPos, new Vector3(1f, 1.1f, 1f),
-                    new Color(0.60f, 0.10f, 0.16f));
+                RuntimeAnimatorController animCtrl =
+                    Resources.Load<RuntimeAnimatorController>("Enemy/CrosbyAnimator");
+                if (animCtrl != null)
+                {
+                    anim.runtimeAnimatorController = animCtrl;
+                }
+                else
+                {
+                    Debug.LogWarning("[LevelBuilder] CrosbyAnimator controller not found in Resources/Enemy/");
+                }
             }
 
             enemyObject.tag = "Enemy";
@@ -1606,8 +1990,12 @@ public class LevelBuilder : MonoBehaviour
             }
             else
             {
-                agentSpawn = EmergencyEnemySpawn(playerNavPos, playerPos, placedPositions, spawnZones,
-                    arenaAnchors, spawnPath, i, out spawnZoneName);
+                if (!TryEmergencyEnemySpawn(playerNavPos, playerPos, placedPositions, spawnZones,
+                        arenaAnchors, spawnPath, i, out agentSpawn, out spawnZoneName))
+                {
+                    DestroyObjectSafe(enemyObject);
+                    continue;
+                }
                 spawnTier = "Emergency";
             }
 
@@ -1653,9 +2041,6 @@ public class LevelBuilder : MonoBehaviour
                 cap.height = worldHeight  / scaleY;
                 cap.radius = worldRadius  / scaleXZ;
                 cap.center = new Vector3(0f, worldCenterY / scaleY, 0f);
-
-                Debug.Log($"[LevelBuilder] CapsuleCollider: local h={cap.height:F3} r={cap.radius:F3} " +
-                          $"(worldH={worldHeight} worldR={worldRadius} lossyScale={ls})");
             }
 
             EnemyController controller = EnsureComponent<EnemyController>(enemyObject);
@@ -1671,10 +2056,26 @@ public class LevelBuilder : MonoBehaviour
             agent.stoppingDistance = Mathf.Max(0.05f, controller.meleeAttackRange * 0.08f);
 
             // Snap the agent onto the nearest NavMesh position before it begins moving.
+            // CRITICAL: leave the agent DISABLED until PlaceAgentOnNavMesh has had a
+            // chance to snap us to a valid NavMesh point. Enabling first at the raw
+            // agentSpawn (which may be ~0.5m off the mesh) is what produced the
+            // "Failed to create agent because it is not close enough to the NavMesh"
+            // warning at level start.
             enemyObject.transform.position = agentSpawn;
-            agent.enabled = true;
-            PlaceAgentOnNavMesh(agent, enemyObject.transform, agentSpawn, agentSpawn, playerNavPos);
+            if (agent.enabled) agent.enabled = false;
+            if (!PlaceAgentOnNavMesh(agent, enemyObject.transform, agentSpawn, agentSpawn, playerNavPos))
+            {
+                Debug.LogError($"[LevelBuilder] Enemy spawn rejected after NavMesh placement failed: {enemyObject.name} anchor={agentSpawn}");
+                DestroyObjectSafe(enemyObject);
+                continue;
+            }
             CorrectEnemySpawnPlacement(enemyObject.transform, agent, playerNavPos);
+            if (agent == null || !agent.enabled || !agent.isOnNavMesh)
+            {
+                Debug.LogError($"[LevelBuilder] Enemy spawn rejected: {enemyObject.name} is not on a valid NavMesh after placement.");
+                DestroyObjectSafe(enemyObject);
+                continue;
+            }
 
             Vector3 finalPos = enemyObject.transform.position;
             float distanceToNearest = DistanceToNearestPlaced(finalPos, placedPositions);
@@ -1701,10 +2102,10 @@ public class LevelBuilder : MonoBehaviour
             // ── AI upgrade stack (order matters; later components read earlier) ──
             //   1) EnemyPersonality — derives traits from weapon category + jitter.
             //   2) EnemyTacticalBrain — target scoring, stance, group claims.
-            //   3) EnemyTacticalActions — Z/X/C driven by personality + brain.
+            // Tactical roll / slide / prone components are intentionally not
+            // attached; those mechanics are player-only.
             EnsureComponent<EnemyPersonality>(enemyObject);
             EnsureComponent<EnemyTacticalBrain>(enemyObject);
-            EnsureComponent<EnemyTacticalActions>(enemyObject);
 
             spawnedEnemies.Add(enemyObject);
         }
@@ -1731,7 +2132,9 @@ public class LevelBuilder : MonoBehaviour
         // InitializeEnemyCount() sets BOTH enemiesRemaining AND totalEnemiesSpawned
         // so EnemyKilled() can compare against the real number of spawned enemies.
         if (GameManager.Instance != null)
-            GameManager.Instance.InitializeEnemyCount(enemyCount);
+            GameManager.Instance.InitializeEnemyCount(spawnedEnemies.Count);
+
+        Debug.Log($"[LevelBuilder] Enemy spawn summary: requested={enemyCount}, spawned={spawnedEnemies.Count}, NavMeshArea={EstimateNavMeshCoverageArea():F1}m2");
     }
 
     /// <summary>
@@ -2134,16 +2537,30 @@ public class LevelBuilder : MonoBehaviour
     private static Transform GetOrCreateRoot(string objectName)
     {
         GameObject existing = GameObject.Find(objectName);
-        return existing != null ? existing.transform : new GameObject(objectName).transform;
+        Transform root = existing != null ? existing.transform : new GameObject(objectName).transform;
+        root.SetParent(null, false);
+        root.position = Vector3.zero;
+        root.rotation = Quaternion.identity;
+        root.localScale = Vector3.one;
+        if (objectName == GameplayRootName)
+            TagObjectIfDefined(root.gameObject, "LevelContent");
+        return root;
     }
 
     private static Transform GetOrCreateChildRoot(Transform parent, string objectName)
     {
         Transform existing = parent.Find(objectName);
-        if (existing != null) return existing;
-        GameObject created = new GameObject(objectName);
-        created.transform.SetParent(parent, false);
-        return created.transform;
+        Transform child = existing;
+        if (child == null)
+        {
+            GameObject created = new GameObject(objectName);
+            child = created.transform;
+            child.SetParent(parent, false);
+        }
+        child.localPosition = Vector3.zero;
+        child.localRotation = Quaternion.identity;
+        child.localScale = Vector3.one;
+        return child;
     }
 
     private static void ClearChildren(Transform root)
@@ -2162,6 +2579,104 @@ public class LevelBuilder : MonoBehaviour
         else
             DestroyImmediate(obj);
     }
+
+    private void CleanupGeneratedRuntimeObjects()
+    {
+#if UNITY_EDITOR
+        RemoveMissingScriptsInGeneratedObjects();
+#endif
+        UniversalCeilingSealer.CleanupLegacyRuntimePieces();
+
+        string[] staleRootNames =
+        {
+            GameplayRootName,
+            LegacyGameplayRootName,
+            ArenaRootName,
+            EnemyRootName,
+            MinimapCameraName,
+            "NavMesh Surface",
+            "ArenaVisualClosure",
+            "WorldArenaStabilizer",
+            "ArenaEdgeBlockers",
+            "Ground_PhysicsFloor",
+            "VisibleGround_Fallback",
+            "UNIVERSAL_CEILING_Host",
+            "UNIVERSAL_CEILING_TILES",
+            "UNIVERSAL_CEILING_LIGHTS",
+            "UNIVERSAL_CEILING_SUPPORTS",
+            "UNIVERSAL_CEILING_DECOR",
+            "UNIVERSAL_CEILING_CAP"
+        };
+
+        int removed = 0;
+        GameObject[] allObjects = Object.FindObjectsByType<GameObject>(
+            FindObjectsInactive.Include,
+            FindObjectsSortMode.None);
+        for (int i = 0; i < allObjects.Length; i++)
+        {
+            GameObject obj = allObjects[i];
+            if (obj == null || obj == gameObject || obj.transform.IsChildOf(transform))
+                continue;
+            if (!IsNamedGeneratedRoot(obj.name, staleRootNames))
+                continue;
+
+            DestroyObjectSafe(obj);
+            removed++;
+        }
+
+        if (removed > 0)
+            Debug.Log($"[LevelBuilder] Removed {removed} stale generated root object(s) before rebuild.");
+    }
+
+    private static bool IsNamedGeneratedRoot(string objectName, string[] staleRootNames)
+    {
+        if (string.IsNullOrEmpty(objectName) || staleRootNames == null)
+            return false;
+
+        for (int i = 0; i < staleRootNames.Length; i++)
+        {
+            if (objectName == staleRootNames[i])
+                return true;
+        }
+        return false;
+    }
+
+#if UNITY_EDITOR
+    private static void RemoveMissingScriptsInGeneratedObjects()
+    {
+        string[] names =
+        {
+            GameplayRootName,
+            LegacyGameplayRootName,
+            ArenaRootName,
+            EnemyRootName,
+            "FbxMap",
+            "SciFiArena",
+            "SciFiArena(Clone)"
+        };
+
+        int removed = 0;
+        for (int i = 0; i < names.Length; i++)
+        {
+            GameObject root = GameObject.Find(names[i]);
+            if (root == null) continue;
+            removed += RemoveMissingScriptsInHierarchy(root);
+        }
+
+        if (removed > 0)
+            Debug.Log($"[LevelBuilder] Removed {removed} missing script component(s) from generated runtime objects.");
+    }
+
+    private static int RemoveMissingScriptsInHierarchy(GameObject root)
+    {
+        if (root == null) return 0;
+
+        int removed = GameObjectUtility.RemoveMonoBehavioursWithMissingScript(root);
+        for (int i = 0; i < root.transform.childCount; i++)
+            removed += RemoveMissingScriptsInHierarchy(root.transform.GetChild(i).gameObject);
+        return removed;
+    }
+#endif
 
     private void ConfigurePlayer()
     {
@@ -2201,10 +2716,12 @@ public class LevelBuilder : MonoBehaviour
 
         // ── Street-only spawn (real map roads — never backfill / under buildings) ──
         Transform fbxMap = GameObject.Find("FbxMap")?.transform;
-        if (fbxMap != null)
+        if (fbxMap != null && !useSciFiArena)
             EnemySpawnGeometry.RefreshStreetSpawnAnchors(fbxMap);
 
         Vector3 safeSpawn = FindValidatedPlayerSpawnPoint(SafeFallbackSpawn, playerController);
+        if (useSciFiArena)
+            SetSciFiPlayerSpawnMarker(safeSpawn);
         Debug.Log($"[LevelBuilder] Player spawn: {safeSpawn} (navMeshReady={_navMeshReady})");
 
         playerController.TeleportTo(safeSpawn);
@@ -2236,20 +2753,132 @@ public class LevelBuilder : MonoBehaviour
 
         Debug.Log($"[LevelBuilder] Player configured at {playerController.transform.position}");
     }
+
+    private static void SetSciFiPlayerSpawnMarker(Vector3 position)
+    {
+        Transform marker = FindSciFiArenaPlayerSpawnMarker();
+        if (marker != null)
+            marker.position = position;
+    }
     private NavMeshSurface EnsureNavMeshSurface()
     {
+        if (useSciFiArena)
+            return EnsureSciFiWarehouseNavMeshSurface();
+
         NavMeshSurface navMeshSurface = Object.FindFirstObjectByType<NavMeshSurface>();
         if (navMeshSurface == null)
         {
             GameObject surfaceObject = new GameObject("NavMesh Surface");
+            Transform generatedRoot = GetOrCreateRoot(GameplayRootName);
+            surfaceObject.transform.SetParent(generatedRoot, false);
             navMeshSurface = surfaceObject.AddComponent<NavMeshSurface>();
             navMeshSurface.collectObjects = CollectObjects.All;
+        }
+        else if (navMeshSurface.transform.parent == null)
+        {
+            Transform generatedRoot = GetOrCreateRoot(GameplayRootName);
+            navMeshSurface.transform.SetParent(generatedRoot, true);
         }
 
         navMeshSurface.useGeometry = NavMeshCollectGeometry.PhysicsColliders;
         navMeshSurface.minRegionArea = 2.5f;
         navMeshSurface.layerMask = BuildNavMeshLayerMask();
         return navMeshSurface;
+    }
+
+    private NavMeshSurface EnsureSciFiWarehouseNavMeshSurface()
+    {
+        Transform mapRoot = GameObject.Find("FbxMap")?.transform;
+        if (mapRoot == null)
+            return null;
+
+        Transform proxyRoot = mapRoot.name == "SciFiNavMeshProxyColliders"
+            ? mapRoot
+            : mapRoot.Find("SciFiNavMeshProxyColliders");
+        if (proxyRoot == null)
+        {
+            Debug.LogError("[AINav] SciFiNavMeshProxyColliders missing from SciFiArena prefab. Rebuild with Tools > PRISM-7 > Build SciFi Arena Prefab outside Play Mode.");
+            return null;
+        }
+
+        NavMeshSurface[] surfaces = Object.FindObjectsByType<NavMeshSurface>(
+            FindObjectsInactive.Include,
+            FindObjectsSortMode.None);
+
+        NavMeshSurface surface = null;
+        for (int i = 0; i < surfaces.Length; i++)
+        {
+            NavMeshSurface candidate = surfaces[i];
+            if (candidate == null) continue;
+
+            if (candidate.transform == proxyRoot)
+            {
+                surface = candidate;
+            }
+            else
+            {
+                if (candidate.transform == mapRoot || candidate.transform.IsChildOf(mapRoot))
+                    DestroyObjectSafe(candidate);
+                else
+                    DestroyObjectSafe(candidate.gameObject);
+            }
+        }
+
+        if (surface == null)
+            surface = proxyRoot.gameObject.AddComponent<NavMeshSurface>();
+
+        surface.collectObjects = CollectObjects.Children;
+        surface.useGeometry = NavMeshCollectGeometry.PhysicsColliders;
+        surface.minRegionArea = 2.5f;
+        surface.layerMask = BuildNavMeshLayerMask();
+        return surface;
+    }
+
+    private NavSourceDiagnostics PrepareSciFiNavMeshSources(Transform mapRoot)
+    {
+        NavSourceDiagnostics diagnostics = default;
+        if (mapRoot == null)
+        {
+            diagnostics.zeroAreaReason = "missing FbxMap root";
+            return diagnostics;
+        }
+
+        Transform proxyRoot = mapRoot.name == "SciFiNavMeshProxyColliders"
+            ? mapRoot
+            : mapRoot.Find("SciFiNavMeshProxyColliders");
+        if (proxyRoot == null)
+        {
+            diagnostics.zeroAreaReason = "missing SciFiNavMeshProxyColliders prefab root";
+            return diagnostics;
+        }
+
+        CountSciFiProxySources(proxyRoot, ref diagnostics);
+
+        if (diagnostics.sources == 0)
+            diagnostics.zeroAreaReason = "no enabled collider sources under SciFiNavMeshProxyColliders";
+        else if (diagnostics.walkableSources == 0)
+            diagnostics.zeroAreaReason = "proxy colliders exist, but none are enabled walkable sources";
+        else if (!_hasAssembledWarehouseBounds)
+            diagnostics.zeroAreaReason = "warehouse bounds are invalid";
+        else
+            diagnostics.zeroAreaReason = "NavMesh builder returned no polygons from valid walkable collider sources";
+
+        Debug.Log($"[AINav] SciFi prefab proxy sources: proxyColliders={diagnostics.walkableSources}");
+        return diagnostics;
+    }
+
+    private static void CountSciFiProxySources(Transform proxyRoot, ref NavSourceDiagnostics diagnostics)
+    {
+        Collider[] colliders = proxyRoot.GetComponentsInChildren<Collider>(true);
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider collider = colliders[i];
+            if (collider == null || collider.isTrigger || !collider.enabled)
+                continue;
+
+            diagnostics.sources++;
+            diagnostics.walkableSources++;
+        }
     }
 
     private static LayerMask BuildNavMeshLayerMask()
@@ -2281,11 +2910,29 @@ public class LevelBuilder : MonoBehaviour
                 return false;
             }
 
-            MarkNavMeshWalkability();
+            _lastNavSourceDiagnostics = default;
+            if (useSciFiArena)
+                _lastNavSourceDiagnostics = PrepareSciFiNavMeshSources(navMeshSurface.transform);
+
+            if (!useSciFiArena)
+                MarkNavMeshWalkability();
             Debug.Log("[AINav] runtime NavMesh build started");
-            navMeshSurface.BuildNavMesh();
-            bool ready = NavMesh.SamplePosition(SafeFallbackSpawn, out _, 6f, NavMesh.AllAreas);
+            if (useSciFiArena)
+                BuildSciFiNavMeshFromProxyColliders(navMeshSurface.transform);
+            else
+                navMeshSurface.BuildNavMesh();
+            float navArea = EstimateNavMeshCoverageArea();
+            bool ready = navArea > 20f && HasAnyNavMeshNearArena();
             Debug.Log("[AINav] runtime NavMesh build completed");
+            if (useSciFiArena)
+            {
+                if (!ready || navArea <= 0.01f)
+                    _lastNavSourceDiagnostics.zeroAreaReason = DiagnoseZeroNavMeshArea(_lastNavSourceDiagnostics);
+                Debug.Log($"[AINav] sources={_lastNavSourceDiagnostics.sources} walkableSources={_lastNavSourceDiagnostics.walkableSources} navMeshArea={navArea:F1} ready={ready.ToString().ToLowerInvariant()}");
+                if (navArea <= 0.01f)
+                    Debug.LogError($"[AINav] NavMesh area is 0.0: {_lastNavSourceDiagnostics.zeroAreaReason}");
+            }
+            Debug.Log($"[AINav] NavMesh coverage area = {navArea:F1} m2");
             Debug.Log("[AINav] NavMesh ready = " + ready.ToString().ToLowerInvariant());
             if (ready)
                 Debug.Log("[AINav] using baked NavMesh data");
@@ -2293,10 +2940,190 @@ public class LevelBuilder : MonoBehaviour
         }
         catch (System.Exception e)
         {
-            Debug.LogWarning($"[LevelBuilder] NavMesh build failed; continuing with fallback spawn. {e.GetType().Name}: {e.Message}");
+            Debug.LogWarning($"[LevelBuilder] NavMesh build failed; enemy spawning will be skipped. {e.GetType().Name}: {e.Message}");
             Debug.Log("[AINav] NavMesh ready = false");
             return false;
         }
+    }
+
+    private string DiagnoseZeroNavMeshArea(NavSourceDiagnostics diagnostics)
+    {
+        if (!string.IsNullOrEmpty(diagnostics.zeroAreaReason)
+            && diagnostics.zeroAreaReason != "NavMesh builder returned no polygons from valid walkable collider sources")
+            return diagnostics.zeroAreaReason;
+
+        if (diagnostics.walkableSources == 0)
+            return "SciFiNavMeshProxyColliders contains no enabled BoxCollider sources; rebuild the prefab outside Play Mode";
+        if (!_hasAssembledWarehouseBounds)
+            return "warehouse bounds are invalid";
+        if (_assembledWarehouseBounds.size.x <= 0.1f || _assembledWarehouseBounds.size.z <= 0.1f)
+            return "warehouse bounds are too small for a NavMesh bake";
+
+        return diagnostics.zeroAreaReason;
+    }
+
+    private static bool BuildSciFiNavMeshFromProxyColliders(Transform surfaceRoot)
+    {
+        Transform proxyRoot = surfaceRoot != null && surfaceRoot.name == "SciFiNavMeshProxyColliders"
+            ? surfaceRoot
+            : surfaceRoot?.Find("SciFiNavMeshProxyColliders");
+        if (proxyRoot == null)
+            return false;
+
+        BoxCollider[] boxes = proxyRoot.GetComponentsInChildren<BoxCollider>(true);
+        var sources = new System.Collections.Generic.List<NavMeshBuildSource>(boxes.Length);
+        Bounds bounds = default;
+        bool hasBounds = false;
+
+        for (int i = 0; i < boxes.Length; i++)
+        {
+            BoxCollider box = boxes[i];
+            if (box == null || !box.enabled || box.isTrigger || !box.gameObject.activeInHierarchy)
+                continue;
+
+            Matrix4x4 matrix = box.transform.localToWorldMatrix * Matrix4x4.Translate(box.center);
+            sources.Add(new NavMeshBuildSource
+            {
+                shape = NavMeshBuildSourceShape.Box,
+                transform = matrix,
+                size = box.size,
+                area = 0
+            });
+
+            if (!hasBounds)
+            {
+                bounds = box.bounds;
+                hasBounds = true;
+            }
+            else
+            {
+                bounds.Encapsulate(box.bounds);
+            }
+        }
+
+        if (sources.Count == 0 || !hasBounds)
+            return false;
+
+        if (Instance != null)
+        {
+            Instance._sciFiProxyBounds = bounds;
+            Instance._hasSciFiProxyBounds = true;
+        }
+
+        bounds.Expand(new Vector3(4f, 8f, 4f));
+
+        NavMesh.RemoveAllNavMeshData();
+        _sciFiNavMeshDataInstance.Remove();
+        NavMeshData data = NavMeshBuilder.BuildNavMeshData(
+            NavMesh.GetSettingsByID(0),
+            sources,
+            bounds,
+            Vector3.zero,
+            Quaternion.identity);
+
+        if (data == null)
+            return false;
+
+        _sciFiNavMeshDataInstance = NavMesh.AddNavMeshData(data);
+        ClampSciFiSpawnMarkersToNavMesh(proxyRoot);
+        Debug.Log($"[AINav] explicit SciFi NavMesh build sources={sources.Count} bounds={bounds}");
+        return _sciFiNavMeshDataInstance.valid;
+    }
+
+    private static void ClampSciFiSpawnMarkersToNavMesh(Transform proxyRoot)
+    {
+        GameObject arena = GameObject.Find("FbxMap") ?? GameObject.Find("SciFiArena") ?? GameObject.Find("SciFiArena(Clone)");
+        Transform spawnRoot = arena != null ? arena.transform.Find("SpawnPoints") : null;
+        if (spawnRoot == null)
+            return;
+
+        Transform[] markers = spawnRoot.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < markers.Length; i++)
+        {
+            Transform marker = markers[i];
+            if (marker == null || marker == spawnRoot)
+                continue;
+            if (marker.name != "PlayerSpawn" && !marker.name.StartsWith("EnemySpawn_", System.StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (TryFindNearestSciFiNavMeshPoint(marker.position, marker.name == "PlayerSpawn" ? 80f : 24f, out Vector3 navPoint))
+                marker.position = ProjectSciFiPointToSupport(navPoint);
+        }
+    }
+
+    private static float EstimateNavMeshCoverageArea()
+    {
+        NavMeshTriangulation tri = NavMesh.CalculateTriangulation();
+        if (tri.vertices == null || tri.indices == null || tri.vertices.Length == 0 || tri.indices.Length < 3)
+            return 0f;
+
+        float area = 0f;
+        for (int i = 0; i + 2 < tri.indices.Length; i += 3)
+        {
+            Vector3 a = tri.vertices[tri.indices[i]];
+            Vector3 b = tri.vertices[tri.indices[i + 1]];
+            Vector3 c = tri.vertices[tri.indices[i + 2]];
+            area += Vector3.Cross(b - a, c - a).magnitude * 0.5f;
+        }
+        return area;
+    }
+
+    private bool HasAnyNavMeshNearArena()
+    {
+        if (useSciFiArena)
+        {
+            Transform marker = FindSciFiArenaPlayerSpawnMarker();
+            if (marker != null && NavMesh.SamplePosition(marker.position, out _, 8f, NavMesh.AllAreas))
+                return true;
+
+            if (_hasAssembledWarehouseBounds)
+            {
+                Vector3 c = _assembledWarehouseBounds.center;
+                Vector3 e = _assembledWarehouseBounds.extents * 0.55f;
+                Vector3[] warehouseProbes =
+                {
+                    c,
+                    new Vector3(c.x + e.x, c.y + 1f, c.z),
+                    new Vector3(c.x - e.x, c.y + 1f, c.z),
+                    new Vector3(c.x, c.y + 1f, c.z + e.z),
+                    new Vector3(c.x, c.y + 1f, c.z - e.z)
+                };
+                for (int i = 0; i < warehouseProbes.Length; i++)
+                    if (NavMesh.SamplePosition(warehouseProbes[i], out _, 10f, NavMesh.AllAreas))
+                        return true;
+            }
+        }
+
+        Vector3[] probes =
+        {
+            Vector3.zero,
+            new Vector3( 6f, 1f,  0f),
+            new Vector3(-6f, 1f,  0f),
+            new Vector3( 0f, 1f,  6f),
+            new Vector3( 0f, 1f, -6f),
+            new Vector3(12f, 1f, 12f),
+            new Vector3(-12f, 1f, 12f),
+            new Vector3(12f, 1f, -12f),
+            new Vector3(-12f, 1f, -12f)
+        };
+
+        for (int i = 0; i < probes.Length; i++)
+        {
+            if (NavMesh.SamplePosition(probes[i], out _, 12f, NavMesh.AllAreas))
+                return true;
+        }
+
+        Transform arena = GameObject.Find("FbxMap")?.transform;
+        if (arena == null) return false;
+
+        Renderer[] renderers = arena.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer r = renderers[i];
+            if (r == null || r is ParticleSystemRenderer) continue;
+            if (NavMesh.SamplePosition(r.bounds.center, out _, 8f, NavMesh.AllAreas))
+                return true;
+        }
+        return false;
     }
 
     private float GetNavMeshGroundReferenceY()
@@ -2376,6 +3203,9 @@ public class LevelBuilder : MonoBehaviour
 
     private static bool ShouldIncludeInNavMesh(Renderer renderer, float groundY)
     {
+        if (IsSciFiWalkableSurfaceName(renderer.gameObject.name))
+            return true;
+
         if (ShouldExcludeFromNavMesh(renderer, groundY))
             return false;
 
@@ -2388,8 +3218,13 @@ public class LevelBuilder : MonoBehaviour
 
     private static bool ShouldIncludeColliderInNavMesh(Collider collider, float groundY)
     {
+        if (IsSciFiWalkableSurfaceName(collider.name))
+            return true;
+
         for (Transform t = collider.transform; t != null; t = t.parent)
         {
+            if (IsSciFiWalkableSurfaceName(t.name))
+                return true;
             if (EnemySpawnGeometry.IsProceduralSpawnSurface(t.name.ToLowerInvariant()))
                 return false;
         }
@@ -2404,6 +3239,22 @@ public class LevelBuilder : MonoBehaviour
             return true;
 
         return IsLowFlatWalkSurface(collider.bounds, groundY, 0.85f);
+    }
+
+    private static bool IsSciFiWalkableSurfaceName(string objectName)
+    {
+        if (Instance == null || !Instance.useSciFiArena || string.IsNullOrEmpty(objectName))
+            return false;
+
+        string n = objectName.ToLowerInvariant();
+        if (n.Contains("rail") || n.Contains("railing") || n.Contains("support")
+            || n.Contains("pillar") || n.Contains("beam") || n.Contains("ceiling")
+            || n.Contains("wall") || n.Contains("door") || n.Contains("vent"))
+            return false;
+
+        return n.Contains("floor") || n.Contains("ground") || n.Contains("catwalk")
+            || n.Contains("walkway") || n.Contains("stair") || n.Contains("step")
+            || n.Contains("platform");
     }
 
     private static bool IsNonWalkableColliderName(string lowerName)
@@ -2503,6 +3354,26 @@ public class LevelBuilder : MonoBehaviour
         // MatchCommentator is attached to the DDOL GameManager in GameManager.Awake (fully programmatic VO).
     }
 
+    private static void ResetRuntimeUiAnchors()
+    {
+        Canvas.ForceUpdateCanvases();
+        Canvas[] canvases = Object.FindObjectsByType<Canvas>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
+        for (int i = 0; i < canvases.Length; i++)
+        {
+            Canvas canvas = canvases[i];
+            if (canvas == null) continue;
+            RectTransform rect = canvas.GetComponent<RectTransform>();
+            if (rect != null)
+                LayoutRebuilder.ForceRebuildLayoutImmediate(rect);
+        }
+
+        MinimapCameraFollow minimap = Object.FindFirstObjectByType<MinimapCameraFollow>();
+        PlayerController player = Object.FindFirstObjectByType<PlayerController>();
+        if (minimap != null && player != null)
+            minimap.SetFullMapMode(false, player.transform);
+        Canvas.ForceUpdateCanvases();
+    }
+
     private void EnsurePauseMenu()
     {
         PauseMenuController pause = GetComponent<PauseMenuController>();
@@ -2515,6 +3386,8 @@ public class LevelBuilder : MonoBehaviour
     {
         if (Object.FindFirstObjectByType<MinimapCameraFollow>() != null) return;
         GameObject minimapObject = new GameObject(MinimapCameraName);
+        Transform generatedRoot = GetOrCreateRoot(GameplayRootName);
+        minimapObject.transform.SetParent(generatedRoot, false);
         Camera minimapCamera = minimapObject.AddComponent<Camera>();
         minimapCamera.transform.position = new Vector3(0f, 35f, 0f);
         minimapCamera.transform.rotation = Quaternion.Euler(90f, 0f, 0f);
@@ -2765,14 +3638,13 @@ public class LevelBuilder : MonoBehaviour
                 return indoorFeet + Vector3.up * 0.02f;
             }
 
-            Transform marker = FindSciFiArenaPlayerSpawnMarker();
-            if (marker != null)
+            if (TryFindBoundedWarehouseFallback(out Vector3 boundedFallback))
             {
-                Debug.Log($"[LevelBuilder] SciFiArena marker fallback at {marker.position}");
-                return marker.position + Vector3.up * 0.02f;
+                Debug.LogWarning("[LevelBuilder] SciFiArena player spawn could not clamp to NavMesh; using bounded warehouse center so the player stays inside the assembly.");
+                return boundedFallback + Vector3.up * 0.02f;
             }
 
-            Debug.Log("[LevelBuilder] SciFiArena spawn: indoor finder failed, returning fallback (NavMesh likely not ready yet).");
+            Debug.LogError("[LevelBuilder] SciFiArena spawn failed: no valid NavMesh point and no warehouse bounds.");
             return SafeFallbackSpawn;
         }
 
@@ -2856,7 +3728,34 @@ public class LevelBuilder : MonoBehaviour
         if (TryIndoorNavMeshSpawn(fallback, capsuleCenterLocal, radius, height, mask, out feet))
             return true;
 
-        // 3) Sweep a small set of hall-center candidates.
+        // 3) Sweep candidates generated from the final assembled warehouse bounds.
+        if (Instance != null && Instance._hasAssembledWarehouseBounds)
+        {
+            Bounds b = Instance._assembledWarehouseBounds;
+            float y = b.min.y + 1f;
+            Vector3 c = b.center;
+            float x = Mathf.Max(3f, b.extents.x * 0.35f);
+            float z = Mathf.Max(3f, b.extents.z * 0.35f);
+            Vector3[] boundedSeeds =
+            {
+                new Vector3(c.x, y, c.z),
+                new Vector3(c.x - x, y, c.z),
+                new Vector3(c.x + x, y, c.z),
+                new Vector3(c.x, y, c.z - z),
+                new Vector3(c.x, y, c.z + z),
+                new Vector3(c.x - x, y, c.z - z),
+                new Vector3(c.x + x, y, c.z - z),
+                new Vector3(c.x - x, y, c.z + z),
+                new Vector3(c.x + x, y, c.z + z),
+            };
+            for (int i = 0; i < boundedSeeds.Length; i++)
+            {
+                if (TryIndoorNavMeshSpawn(boundedSeeds[i], capsuleCenterLocal, radius, height, mask, out feet))
+                    return true;
+            }
+        }
+
+        // 4) Sweep a small set of origin-centered candidates for older prefabs.
         Vector3[] seeds =
         {
             new Vector3(0f, 1f, -6f),
@@ -2908,11 +3807,117 @@ public class LevelBuilder : MonoBehaviour
         out Vector3 feet)
     {
         feet = default;
-        if (!NavMesh.SamplePosition(seed, out NavMeshHit hit, 6f, NavMesh.AllAreas))
+        if (!TryFindNearestSciFiNavMeshPoint(seed, 80f, out Vector3 navPoint))
             return false;
-        if (!IsCapsuleSpawnClear(hit.position, capsuleCenterLocal, radius, height, mask, minObstacleDistance: 0.55f))
+        if (!IsInsideAssembledWarehouseBounds(navPoint))
             return false;
-        feet = hit.position;
+        Vector3 supported = ProjectSciFiPointToSupport(navPoint);
+        if (!IsCapsuleSpawnClear(supported, capsuleCenterLocal, radius, height, mask, minObstacleDistance: 0.55f))
+            return false;
+        feet = supported;
+        return true;
+    }
+
+    private static bool TryFindNearestSciFiNavMeshPoint(Vector3 seed, float maxDistance, out Vector3 point)
+    {
+        point = default;
+
+        if (NavMesh.SamplePosition(seed, out NavMeshHit hit, maxDistance, NavMesh.AllAreas)
+            && IsInsideSciFiProxyBounds(hit.position))
+        {
+            point = hit.position;
+            return true;
+        }
+
+        if (Instance == null || !Instance._hasSciFiProxyBounds)
+            return false;
+
+        Bounds b = Instance._sciFiProxyBounds;
+        float y = b.min.y + 1f;
+        Vector3 c = b.center;
+        Vector3[] seeds =
+        {
+            new Vector3(seed.x, y, seed.z),
+            new Vector3(c.x, y, c.z),
+            new Vector3(c.x - b.extents.x * 0.35f, y, c.z),
+            new Vector3(c.x + b.extents.x * 0.35f, y, c.z),
+            new Vector3(c.x, y, c.z - b.extents.z * 0.35f),
+            new Vector3(c.x, y, c.z + b.extents.z * 0.35f),
+            new Vector3(c.x - b.extents.x * 0.25f, y, c.z - b.extents.z * 0.25f),
+            new Vector3(c.x + b.extents.x * 0.25f, y, c.z - b.extents.z * 0.25f),
+            new Vector3(c.x - b.extents.x * 0.25f, y, c.z + b.extents.z * 0.25f),
+            new Vector3(c.x + b.extents.x * 0.25f, y, c.z + b.extents.z * 0.25f)
+        };
+
+        float best = float.PositiveInfinity;
+        Vector3 bestPoint = default;
+        bool found = false;
+        for (int i = 0; i < seeds.Length; i++)
+        {
+            if (!NavMesh.SamplePosition(seeds[i], out hit, maxDistance, NavMesh.AllAreas))
+                continue;
+            if (!IsInsideSciFiProxyBounds(hit.position))
+                continue;
+            float d = (hit.position - seed).sqrMagnitude;
+            if (d >= best)
+                continue;
+            best = d;
+            bestPoint = hit.position;
+            found = true;
+        }
+
+        point = bestPoint;
+        return found;
+    }
+
+    private static Vector3 ProjectSciFiPointToSupport(Vector3 navPoint)
+    {
+        Vector3 result = navPoint;
+        int mask = BuildNavMeshLayerMask();
+        Vector3 start = navPoint + Vector3.up * 2f;
+        if (Physics.Raycast(start, Vector3.down, out RaycastHit hit, 8f, mask, QueryTriggerInteraction.Ignore)
+            && IsSciFiWalkableSpawnSupport(hit.collider, hit.point + Vector3.up * 0.05f))
+        {
+            result = hit.point;
+        }
+
+        result.y += 0.05f;
+        return result;
+    }
+
+    private static bool IsInsideSciFiProxyBounds(Vector3 position)
+    {
+        if (Instance == null || !Instance.useSciFiArena || !Instance._hasSciFiProxyBounds)
+            return true;
+
+        Bounds b = Instance._sciFiProxyBounds;
+        b.Expand(new Vector3(1.5f, 6f, 1.5f));
+        return b.Contains(position);
+    }
+
+    private static bool IsInsideAssembledWarehouseBounds(Vector3 position)
+    {
+        if (Instance != null && Instance.useSciFiArena && Instance._hasSciFiProxyBounds)
+            return IsInsideSciFiProxyBounds(position);
+
+        if (Instance == null || !Instance.useSciFiArena || !Instance._hasAssembledWarehouseBounds)
+            return true;
+
+        Bounds b = Instance._assembledWarehouseBounds;
+        b.Expand(new Vector3(-1.5f, 3f, -1.5f));
+        return position.x >= b.min.x && position.x <= b.max.x
+            && position.z >= b.min.z && position.z <= b.max.z
+            && position.y >= b.min.y - 0.35f && position.y <= b.max.y + 0.5f;
+    }
+
+    private static bool TryFindBoundedWarehouseFallback(out Vector3 feet)
+    {
+        feet = default;
+        if (Instance == null || !Instance.useSciFiArena || !Instance._hasAssembledWarehouseBounds)
+            return false;
+
+        Bounds b = Instance._assembledWarehouseBounds;
+        feet = new Vector3(b.center.x, b.min.y + 0.08f, b.center.z);
         return true;
     }
 
@@ -2978,11 +3983,37 @@ public class LevelBuilder : MonoBehaviour
             if (c == null) continue;
             if (!c.enabled) continue;
             if (c.isTrigger) continue;
+            if (Instance != null && Instance.useSciFiArena && IsSciFiWalkableSpawnSupport(c, worldPosition))
+                continue;
             // Reject any solid overlap.
             return false;
         }
 
         return true;
+    }
+
+    private static bool IsSciFiWalkableSpawnSupport(Collider collider, Vector3 feetPosition)
+    {
+        if (collider == null)
+            return false;
+
+        Bounds b = collider.bounds;
+        if (b.max.y > feetPosition.y + 0.25f)
+            return false;
+
+        string lower = collider.name.ToLowerInvariant();
+        if (lower.Contains("navmeshproxy") || lower.Contains("floor") || lower.Contains("catwalk")
+            || lower.Contains("stair") || lower.Contains("step") || lower.Contains("platform"))
+            return true;
+
+        for (Transform t = collider.transform; t != null; t = t.parent)
+        {
+            string n = t.name.ToLowerInvariant();
+            if (n.Contains("navmeshproxycolliders") || n.Contains("floor tiles") || n.Contains("catwalk"))
+                return true;
+        }
+
+        return false;
     }
 
     private static bool IsFarFromEnemies(Vector3 pos, float minEnemyDistance)
@@ -3130,19 +4161,26 @@ public class LevelBuilder : MonoBehaviour
         return new Vector3(preferred.x, preferred.y + 0.2f, preferred.z);
     }
 
-    private static void PlaceAgentOnNavMesh(NavMeshAgent agent, Transform target, Vector3 spawnPosition,
+    private static bool PlaceAgentOnNavMesh(NavMeshAgent agent, Transform target, Vector3 spawnPosition,
         Vector3 snapAnchor = default, Vector3 playerNavPos = default)
     {
-        if (target == null) return;
+        if (target == null) return false;
 
         Vector3 anchor = snapAnchor == default ? spawnPosition : snapAnchor;
         if (EnemySpawnGeometry.TryPlaceAgentOnValidNavMesh(agent, target, anchor, playerNavPos))
-            return;
+        {
+            if (!IsInsideAssembledWarehouseBounds(target.position))
+            {
+                if (agent != null) agent.enabled = false;
+                return false;
+            }
+            return agent == null || (agent.enabled && agent.isOnNavMesh);
+        }
 
         if (agent == null)
         {
             target.position = spawnPosition;
-            return;
+            return false;
         }
 
         agent.enabled = false;
@@ -3150,15 +4188,21 @@ public class LevelBuilder : MonoBehaviour
 
         if (TrySampleNavMeshPreservingAnchor(anchor, MaxNavSnapHorizontalDrift, out Vector3 snapped))
         {
+            if (!IsInsideAssembledWarehouseBounds(snapped))
+                return false;
             target.position = snapped;
             agent.enabled = true;
             if (agent.isOnNavMesh)
+            {
                 agent.Warp(snapped);
-            return;
+                return true;
+            }
+            agent.enabled = false;
+            return false;
         }
 
-        Debug.LogWarning($"[LevelBuilder] Could not snap enemy to NavMesh near {spawnPosition}. " +
-                         "Agent left disabled; EnemyController will retry at runtime.");
+        Debug.LogError($"[LevelBuilder] Could not snap enemy to NavMesh near {spawnPosition}. Agent left disabled and spawn rejected.");
+        return false;
     }
 
     private static void CorrectEnemySpawnPlacement(Transform target, NavMeshAgent agent, Vector3 playerNavPos)
@@ -3467,6 +4511,7 @@ public class LevelBuilder : MonoBehaviour
     public void StabilizeGround(Transform root)
     {
         if (root == null) return;
+        if (useSciFiArena) return;
 
         int envLayer = LayerMask.NameToLayer("Environment");
         Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
@@ -3640,27 +4685,25 @@ public class LevelBuilder : MonoBehaviour
 
 public class DoorPassThroughOpen : MonoBehaviour
 {
-    public bool hideOnOpen = true;
+    // Default flipped to FALSE: the door VISUAL must stay visible at all
+    // times. The previous default hid the entire door GameObject (SetActive
+    // false) on first open, producing the "doors missing" report. Pass-through
+    // is now handled by simply disabling the colliders; the renderers stay on.
+    public bool hideOnOpen = false;
     public Vector3 moveOffset = Vector3.up * 3f;
 
     public void OpenPassable()
     {
-        int disabledCount = 0;
         Collider[] colliders = GetComponentsInChildren<Collider>(true);
         for (int i = 0; i < colliders.Length; i++)
         {
             Collider c = colliders[i];
             if (c == null || !c.enabled) continue;
             c.enabled = false;
-            disabledCount++;
         }
 
-        string doorName = name;
         if (hideOnOpen)
             gameObject.SetActive(false);
-        else
-            transform.position += moveOffset;
-
-        Debug.Log($"[DoorFix] OPENED_PASSABLE door={doorName} collidersDisabled={disabledCount}");
+        // No offset move either — the door visual stays exactly where it was.
     }
 }

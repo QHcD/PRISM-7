@@ -23,9 +23,43 @@ public class UIManager : MonoBehaviour
         _runtime = host.AddComponent<UIManager>();
     }
 
+    private float _menuFailsafeTimer = 0f;
+
+    private void Start()
+    {
+        if (SceneManager.GetActiveScene().name == "MainMenu")
+        {
+            Debug.Log("[MainMenuUI] Start on UIManager boot, invoking EnsureMainMenuUI.");
+            EnsureMainMenuUI();
+        }
+    }
+
     private void Update()
     {
         if (!Application.isPlaying) return;
+
+        if (SceneManager.GetActiveScene().name == "MainMenu")
+        {
+            if (GameObject.Find("NeonCanvas") == null)
+            {
+                _menuFailsafeTimer += Time.unscaledDeltaTime;
+                if (_menuFailsafeTimer >= 1.0f)
+                {
+                    Debug.Log("[MainMenuUI] Failsafe triggered in Update: NeonCanvas not found for >1s. Rebuilding.");
+                    EnsureMainMenuUI();
+                    _menuFailsafeTimer = 0f;
+                }
+            }
+            else
+            {
+                _menuFailsafeTimer = 0f;
+            }
+        }
+        else
+        {
+            _menuFailsafeTimer = 0f;
+        }
+
         if (!IsMainMenuLikeScene()) return;
 
         // Only a short stabilization window; do not keep reshuffling forever.
@@ -50,6 +84,9 @@ public class UIManager : MonoBehaviour
             // so ProfileHeader definitely exists, then delete it + compact stack.
             yield return null;
             yield return null;
+
+            EnsureMainMenuUI();
+
             CompactifyMainMenuCanvas();
             yield return null;
             CompactifyMainMenuCanvas(); // second pass for safety if menu rebuilt mid-frame
@@ -68,6 +105,12 @@ public class UIManager : MonoBehaviour
         if (!Application.isPlaying) return;
         // Gameplay / pause overlays need a consistent EventSystem in every scene.
         EnsureInputSystemEventSystem();
+
+        if (scene.name == "MainMenu")
+        {
+            EnsureMainMenuUI();
+        }
+
         if (!IsMainMenuLikeScene()) return;
         Time.timeScale = 1f;
         Cursor.lockState = CursorLockMode.None;
@@ -75,7 +118,7 @@ public class UIManager : MonoBehaviour
         CleanMainMenuMissingScripts();
         CompactifyMainMenuCanvas();
         _mainMenuApplyFramesRemaining = 60;
-
+ 
         // Delayed cleanup so it runs AFTER RuntimeMenuBuilder.Start() as well.
         GameObject host = GameObject.Find("__MainMenuCleanupRunner");
         if (host == null)
@@ -91,6 +134,8 @@ public class UIManager : MonoBehaviour
 
     private static bool IsMainMenuLikeScene()
     {
+        if (SceneManager.GetActiveScene().name == "MainMenu") return true;
+
         // Do not rely on a specific scene name; some projects rename it.
         GameObject canvas = GameObject.Find("NeonCanvas");
         if (canvas == null) return false;
@@ -109,6 +154,57 @@ public class UIManager : MonoBehaviour
         }
 
         return false;
+    }
+
+    private static void EnsureMainMenuUI()
+    {
+        if (SceneManager.GetActiveScene().name != "MainMenu")
+            return;
+
+        Debug.Log("[MainMenuUI] Calling EnsureMainMenuUI");
+
+        // 1) EventSystem check
+        EventSystem eventSystem = UnityEngine.Object.FindFirstObjectByType<EventSystem>();
+        if (eventSystem == null)
+        {
+            GameObject es = new GameObject("EventSystem");
+            eventSystem = es.AddComponent<EventSystem>();
+            es.AddComponent<InputSystemUIInputModule>();
+            Debug.Log("[MainMenuUI] EventSystem missing - created.");
+        }
+        else
+        {
+            Debug.Log("[MainMenuUI] EventSystem exists.");
+        }
+
+        // 2) RuntimeMenuBuilder check
+        RuntimeMenuBuilder builder = UnityEngine.Object.FindFirstObjectByType<RuntimeMenuBuilder>();
+        if (builder == null)
+        {
+            GameObject menuBuilderHost = new GameObject("RuntimeMenuBuilderHost");
+            builder = menuBuilderHost.AddComponent<RuntimeMenuBuilder>();
+            Debug.Log("[MainMenuUI] RuntimeMenuBuilder missing - created.");
+        }
+        else
+        {
+            Debug.Log("[MainMenuUI] RuntimeMenuBuilder exists.");
+        }
+
+        // 3) NeonCanvas check
+        GameObject canvas = GameObject.Find("NeonCanvas");
+        if (canvas == null)
+        {
+            Debug.Log("[MainMenuUI] NeonCanvas missing - rebuilding.");
+            if (builder.customFont == null)
+                builder.customFont = builder.ResolveMenuFont();
+            builder.BuildCurrentScreen();
+        }
+        else
+        {
+            Debug.Log("[MainMenuUI] NeonCanvas exists.");
+        }
+
+        Debug.Log("[MainMenuUI] Main menu build complete.");
     }
 
     public void ShowGameFinishedMenu()

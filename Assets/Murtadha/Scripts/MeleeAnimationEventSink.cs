@@ -72,16 +72,49 @@ public class MeleeAnimationEventSink : MonoBehaviour
     // to resolve at runtime without throwing "No receiver" warnings —
     // they simply do nothing.
 
-    public void EnableRightUnarmedHitboxes() { /* disabled — see header */ }
+    private WeaponHitbox _unarmedHitbox;
+    private bool         _unarmedResolved;
 
-    public void DisableUnarmedHitboxes()     { /* disabled — see header */ }
+    private void Awake()
+    {
+        ResolveUnarmedHitbox();
+    }
 
-    public void EnableLeftUnarmedHitbox()    { /* disabled — see header */ }
+    private void ResolveUnarmedHitbox()
+    {
+        if (_unarmedResolved) return;
+        _unarmedResolved = true;
+
+        WeaponHitbox[] hitboxes = GetComponentsInChildren<WeaponHitbox>(true);
+        for (int i = 0; i < hitboxes.Length; i++)
+        {
+            WeaponHitbox h = hitboxes[i];
+            if (h == null) continue;
+            string lower = h.gameObject.name.ToLowerInvariant();
+            if (lower.Contains("unarmed") || lower.Contains("fist") || lower.Contains("hand"))
+            {
+                _unarmedHitbox = h;
+                return;
+            }
+        }
+    }
+
+    // Zero-cost no-op when no unarmed hitbox exists — no per-event allocations,
+    // no Debug.Log. The previous version ran GetComponentsInChildren + Debug.Log
+    // on every fire which produced major frame stutter during combat.
+    public void EnableRightUnarmedHitboxes()  { if (_unarmedHitbox != null) _unarmedHitbox.EnableHitbox(); }
+    public void DisableRightUnarmedHitboxes() { if (_unarmedHitbox != null) _unarmedHitbox.DisableHitbox(); }
+    public void EnableLeftUnarmedHitboxes()   { if (_unarmedHitbox != null) _unarmedHitbox.EnableHitbox(); }
+    public void DisableLeftUnarmedHitboxes()  { if (_unarmedHitbox != null) _unarmedHitbox.DisableHitbox(); }
+    public void EnableLeftUnarmedHitbox()     { if (_unarmedHitbox != null) _unarmedHitbox.EnableHitbox(); }
+    public void DisableLeftUnarmedHitbox()    { if (_unarmedHitbox != null) _unarmedHitbox.DisableHitbox(); }
+    public void EnableRightUnarmedHitbox()    { if (_unarmedHitbox != null) _unarmedHitbox.EnableHitbox(); }
+    public void DisableRightUnarmedHitbox()   { if (_unarmedHitbox != null) _unarmedHitbox.DisableHitbox(); }
+    public void DisableUnarmedHitboxes()      { if (_unarmedHitbox != null) _unarmedHitbox.DisableHitbox(); }
 
     // Generic enable/disable that can be added to any custom animation clip
-    public void EnableWeaponHitbox()         { /* disabled — see header */ }
-
-    public void DisableWeaponHitbox()        { /* disabled — see header */ }
+    public void EnableWeaponHitbox()  { /* disabled — see header */ }
+    public void DisableWeaponHitbox() { /* disabled — see header */ }
 
     // ── SFX hooks (kept as no-ops for compatibility) ──
 

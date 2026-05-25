@@ -849,12 +849,42 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         EnforceCombatMatrix();
 
+        // ─ Safety kick: if we have a live target but the agent has no path
+        // (FSM stalled in Idle/Patrol on the very first frames before its
+        // ticker schedules a destination), push SetDestination directly. This
+        // is what unfreezes the "enemies stand like statues" symptom.
+        if (_target != null && IsHostileAlive(_target)
+            && _state != AIStateId.Dead && _state != AIStateId.Jumping
+            && _state != AIStateId.Attack && _state != AIStateId.Flinch
+            && _agent != null && _agent.enabled && _agent.isOnNavMesh)
+        {
+            if (_agent.isStopped) _agent.isStopped = false;
+            if (!_agent.hasPath || _agent.pathPending == false)
+            {
+                Vector3 dest = _target.position;
+                if ((_agent.destination - dest).sqrMagnitude > 0.25f)
+                    _agent.SetDestination(dest);
+            }
+            EmitOneShotAiDiagnostic();
+        }
+
         if (ShouldSyncAnimatorThisFrame())
             SyncAnimator();
 
         TickAntiFreeze();
         if (debugEnemyMovement)
             TickDebugLog();
+    }
+
+    private bool _aiDiagEmitted;
+    private void EmitOneShotAiDiagnostic()
+    {
+        if (_aiDiagEmitted) return;
+        _aiDiagEmitted = true;
+        string targetName = _target != null ? _target.name : "<null>";
+        bool hasPath = _agent != null && _agent.hasPath;
+        bool onNav   = _agent != null && _agent.isOnNavMesh;
+        Debug.Log($"[AI] {name} state={_state} target={targetName} agentOnNavMesh={onNav} hasPath={hasPath}", this);
     }
 
     private void FixedUpdate()
@@ -1836,25 +1866,8 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     public void TickCombatManeuver()
     {
-        if (_state != AIStateId.Chase) return;
-        if (!_isGrounded) return;
-        if (_target == null || _agent == null || !_agent.enabled) return;
-
-        _maneuverTimer -= Time.deltaTime;
-        if (_maneuverTimer > 0f) return;
-        _maneuverTimer = Mathf.Max(0.5f, maneuverRollInterval);
-
-        if (Random.value > Mathf.Clamp01(maneuverChance)) return;
-
-        float dist = Vector3.Distance(transform.position, _target.position);
-
-        // Pick a move that suits the current distance.
-        if (dist < 4.5f && Random.value < 0.55f)
-            DoManeuverFlip();   // Close range → evasive flip
-        else if (dist < 9f && Random.value < 0.6f)
-            DoManeuverSlide();  // Mid range → slide-close
-        else
-            DoManeuverSlide();  // Long range → slide (no wall-vault jumps)
+        // Player-only mechanics. Enemies keep standard NavMesh locomotion,
+        // chase, rotation, attack, and death states.
     }
 
     private bool IsStaticWallAhead(float distance)
@@ -2785,15 +2798,43 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void EnsureAnimationEventSink()
     {
-        if (_anim == null)
-            return;
+        // Animation events are fired on the GameObject that owns the Animator
+        // playing the clip. The Crosby enemy prefab can contain multiple
+        // Animators (root + skinned-mesh child literally named "Crosby"), so we
+        // attach receiver sinks on EVERY animator host AND on any child named
+        // "Crosby" — that is the GameObject the engine reports in the
+        // "has no receiver" error message and must be covered explicitly.
+        Animator[] animators = GetComponentsInChildren<Animator>(true);
+        for (int i = 0; i < animators.Length; i++)
+        {
+            Animator a = animators[i];
+            if (a == null) continue;
+            GameObject host = a.gameObject;
+            if (host.GetComponent<AnimationEventSink>() == null)
+                host.AddComponent<AnimationEventSink>();
+            if (host.GetComponent<MeleeAnimationEventSink>() == null)
+                host.AddComponent<MeleeAnimationEventSink>();
+        }
 
-        GameObject animatorHost = _anim.gameObject;
-        if (animatorHost.GetComponent<AnimationEventSink>() == null)
-            animatorHost.AddComponent<AnimationEventSink>();
+        // Belt-and-braces: also walk the whole transform tree and cover any GO
+        // literally named "Crosby" (case-insensitive). Animation events embed
+        // the host GameObject name in the error, so this guarantees a receiver
+        // on exactly the object Unity is firing the event on.
+        Transform[] all = GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < all.Length; i++)
+        {
+            Transform t = all[i];
+            if (t == null) continue;
+            string n = t.gameObject.name;
+            if (string.IsNullOrEmpty(n)) continue;
+            if (n.IndexOf("Crosby", System.StringComparison.OrdinalIgnoreCase) < 0) continue;
 
-        if (animatorHost.GetComponent<MeleeAnimationEventSink>() == null)
-            animatorHost.AddComponent<MeleeAnimationEventSink>();
+            GameObject go = t.gameObject;
+            if (go.GetComponent<AnimationEventSink>() == null)
+                go.AddComponent<AnimationEventSink>();
+            if (go.GetComponent<MeleeAnimationEventSink>() == null)
+                go.AddComponent<MeleeAnimationEventSink>();
+        }
     }
 
     private void AssignMaterial()

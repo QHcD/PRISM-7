@@ -4055,9 +4055,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         orbitCam.sensitivityX         = sensitivity / 30f;   // normalise from PlayerController scale
         orbitCam.sensitivityY         = sensitivity / 30f;
         orbitCam.pivotHeightOffset    = 1.45f;
-        orbitCam.shoulderOffset       = 0.35f;
-        orbitCam.defaultDistance      = 4.65f;
-        orbitCam.minDistance          = 0.35f;
+        orbitCam.shoulderOffset       = 0.48f;
+        orbitCam.defaultDistance      = 4.85f;
+        orbitCam.minDistance          = 1.25f;
         orbitCam.pitchMin             = ThirdPersonMinPitch;
         orbitCam.pitchMax             = ThirdPersonMaxPitch;
         orbitCam.pivotSmoothTime      = 0.08f;
@@ -4085,7 +4085,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (follow == null) return;
 
         follow.target = transform;
-        follow.offset = new Vector3(0.45f, 1.45f, -4.65f);
+        follow.offset = new Vector3(0.55f, 1.45f, -4.85f);
         follow.smoothSpeed = 60f;
         follow.lookHeight = 1.55f;
         follow.lookTargetLocalOffset = Vector3.zero;
@@ -4094,7 +4094,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         follow.maxPitch = ThirdPersonMaxPitch;
         follow.pitch = Mathf.Clamp(cameraPitch, ThirdPersonMinPitch, ThirdPersonMaxPitch);
         follow.enableCollision = true;
-        follow.minDistance = 0.35f;
+        follow.minDistance = 1.25f;
         follow.minHeightAboveGround = 0.55f;
         follow.collisionRadius = 0.25f;
         follow.wallPadding = 0.18f;
@@ -4144,7 +4144,16 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
     private void EnsureThirdPersonBody()
     {
-        if (thirdPersonBody != null) return;
+        // If the Inspector-assigned (or previously spawned) body is already
+        // present we still need to guarantee the AnimationEventSink stubs are
+        // attached — without this, the Player prefab's baked-in Crosby body
+        // played UnarmedLightAttack1 with no receiver because the sink was only
+        // added on the Resources.Load instantiate path below.
+        if (thirdPersonBody != null)
+        {
+            EnsureAnimationEventSink(thirdPersonBody);
+            return;
+        }
 
         GameObject roninBodyPrefab = Resources.Load<GameObject>("Player/Ronin/source/Ronin");
         if (roninBodyPrefab != null)
@@ -4452,11 +4461,50 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     {
         if (root == null) return;
 
+        // Ensure stubs are present on the root
         if (root.GetComponent<AnimationEventSink>() == null)
             root.AddComponent<AnimationEventSink>();
 
         if (root.GetComponent<MeleeAnimationEventSink>() == null)
             root.AddComponent<MeleeAnimationEventSink>();
+
+        // Cover EVERY animator host in the hierarchy, not just the first one
+        // (rigs like Crosby ship with multiple Animators across child meshes —
+        // attaching to only the first one leaves later hosts without a
+        // receiver, which is exactly the "no receiver" error pattern).
+        Animator[] animators = root.GetComponentsInChildren<Animator>(true);
+        for (int i = 0; i < animators.Length; i++)
+        {
+            Animator a = animators[i];
+            if (a == null) continue;
+            GameObject target = a.gameObject;
+            if (target == root) continue;
+
+            if (target.GetComponent<AnimationEventSink>() == null)
+                target.AddComponent<AnimationEventSink>();
+
+            if (target.GetComponent<MeleeAnimationEventSink>() == null)
+                target.AddComponent<MeleeAnimationEventSink>();
+        }
+
+        // Belt-and-braces: cover any GO literally named "Crosby" — the engine
+        // reports the host GameObject name in the "no receiver" warning, so
+        // this guarantees a receiver on exactly that object.
+        Transform[] all = root.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < all.Length; i++)
+        {
+            Transform t = all[i];
+            if (t == null) continue;
+            string n = t.gameObject.name;
+            if (string.IsNullOrEmpty(n)) continue;
+            if (n.IndexOf("Crosby", System.StringComparison.OrdinalIgnoreCase) < 0) continue;
+
+            GameObject go = t.gameObject;
+            if (go.GetComponent<AnimationEventSink>() == null)
+                go.AddComponent<AnimationEventSink>();
+            if (go.GetComponent<MeleeAnimationEventSink>() == null)
+                go.AddComponent<MeleeAnimationEventSink>();
+        }
     }
 
     private void AssignMaterial()
@@ -4532,6 +4580,42 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             if (equippedWeaponObject == null || equippedWeaponLevel != gameplayLevel)
                 AttachWeaponToHand(thirdPersonBody, gameplayLevel);
             SetupWeaponIK();
+        }
+
+        if (gameplayLevel == 8)
+        {
+            // Defensive force-visible pass for the Hammer rig: imported FBXes
+            // sometimes ship with renderer.enabled = false on inner mesh nodes,
+            // which made the HUD say "LEVEL 8 HAMMER" while the model was
+            // present but invisible. Re-enable every renderer + the root GO.
+            bool visible = false;
+            string prefabName = "<null>";
+            string socketName = "<none>";
+            if (equippedWeaponObject != null)
+            {
+                if (!equippedWeaponObject.activeSelf)
+                    equippedWeaponObject.SetActive(true);
+                Renderer[] hammerRenderers = equippedWeaponObject.GetComponentsInChildren<Renderer>(true);
+                for (int i = 0; i < hammerRenderers.Length; i++)
+                {
+                    if (hammerRenderers[i] == null) continue;
+                    if (!hammerRenderers[i].enabled) hammerRenderers[i].enabled = true;
+                    if (hammerRenderers[i].isVisible || hammerRenderers[i].enabled) visible = true;
+                }
+                prefabName = equippedWeaponObject.name;
+                socketName = equippedWeaponObject.transform.parent != null
+                    ? equippedWeaponObject.transform.parent.name
+                    : "<none>";
+            }
+            if (equippedWeaponObject == null || !visible)
+            {
+                Debug.LogError($"[WeaponEquip] Level 8 Hammer missing or invisible: weapon={prefabName} socket={socketName} visible={visible}. " +
+                               "Expected Resources/Weapons/Imported/Hammer(level8)l/source/Sledgehammer/Sledge hammer.");
+            }
+            else
+            {
+                Debug.Log($"[WeaponEquip] Level 8 Hammer equipped: weapon={prefabName} socket={socketName} visible={visible}");
+            }
         }
 
         // Weapon materials stay on the prefab-authored sharedMaterials. Runtime
@@ -4801,14 +4885,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             weapon.transform.localScale,
             ResolveWeaponEquipLogName(level, prefab, equippedWeaponName));
 
-        Debug.Log($"[PlayerController] Weapon '{weapon.name}' → '{weaponParent.name}' " +
-                  $"targetSize={finalTargetSize} extent={weaponExtent} " +
-                  $"localPosition={weapon.transform.localPosition} " +
-                  $"localEuler={weapon.transform.localEulerAngles} " +
-                  $"localScale={weapon.transform.localScale} lossyScale={weapon.transform.lossyScale}");
-        Debug.Log($"[WeaponFix] socket={weaponParent.name} parent={(weaponParent.parent != null ? weaponParent.parent.name : "<none>")}");
-        Debug.Log($"[WeaponFix] weaponLocalPos={weapon.transform.localPosition}");
-        Debug.Log($"[WeaponFix] weaponLocalRot={weapon.transform.localEulerAngles}");
+        // Per-equip [PlayerController] / [WeaponFix] dump logs removed — they
+        // fired on every weapon equip/re-equip (multiple times per level) and
+        // were a major source of combat-time console spam.
 
         // ── 9. Disable physics, embedded animators, colliders ────────────────
         foreach (Animator weaponAnimator in weapon.GetComponentsInChildren<Animator>(true))

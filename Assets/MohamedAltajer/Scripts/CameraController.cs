@@ -277,9 +277,20 @@ public class CameraController : MonoBehaviour
     private void ResolvePlayerTarget()
     {
         if (target != null) return;
+        PlayerController pc = Object.FindFirstObjectByType<PlayerController>();
+        if (pc != null)
+        {
+            target = pc.transform;
+            Debug.Log($"[CameraTarget] Resolved camera target authoritative transform: {target.name} via PlayerController.");
+            return;
+        }
+
         GameObject playerGo = GameObject.FindWithTag("Player");
         if (playerGo != null)
+        {
             target = playerGo.transform;
+            Debug.Log($"[CameraTarget] Resolved camera target transform: {target.name} via Tag fallback.");
+        }
     }
 
     private void Start()

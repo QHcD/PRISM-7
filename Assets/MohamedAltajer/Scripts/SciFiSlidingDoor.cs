@@ -97,49 +97,44 @@ public class SciFiSlidingDoor : MonoBehaviour
         }
     }
 
+    // Door behaviour: AUTO-OPEN on any character (player OR enemy) entering the
+    // trigger, AUTO-CLOSE when none are inside. No "[E] TO INTERACT" prompt — the
+    // door is purely proximity-driven now.
+    private int _occupants;
+
+    private static bool IsCharacterCollider(Collider other)
+    {
+        if (other == null) return false;
+        for (Transform t = other.transform; t != null; t = t.parent)
+        {
+            if (t.CompareTag("Player")) return true;
+            if (t.CompareTag("Enemy"))  return true;
+            if (t.GetComponent<EnemyController>() != null) return true;
+            if (t.GetComponent<PlayerController>() != null) return true;
+        }
+        return false;
+    }
+
     private void OnTriggerEnter(Collider other)
     {
-        if (!IsPlayer(other)) return;
-        _playerInRange = true;
-        _player = other.transform;
-        ShowPrompt();
+        if (!IsCharacterCollider(other)) return;
+        _occupants++;
+        if (s_activeOwner == this) HidePrompt();
+        if (!_isOpen) Open();
     }
 
     private void OnTriggerExit(Collider other)
     {
-        if (!IsPlayer(other)) return;
-        _playerInRange = false;
-        _player = null;
-        if (s_activeOwner == this) HidePrompt();
-    }
-
-    private bool IsPlayer(Collider other)
-    {
-        if (other == null) return false;
-        if (other.attachedRigidbody != null && other.attachedRigidbody.CompareTag(playerTag))
-            return true;
-        for (Transform t = other.transform; t != null; t = t.parent)
-            if (t.CompareTag(playerTag)) return true;
-        return false;
+        if (!IsCharacterCollider(other)) return;
+        _occupants = Mathf.Max(0, _occupants - 1);
+        if (_occupants == 0 && _isOpen && !_isTransitioning)
+            Close();
     }
 
     private void Update()
     {
-        if (!_playerInRange) return;
-        if (!interactiveToggle) return;
-        if (_player != null)
-        {
-            float d = Vector3.Distance(_player.position, transform.position);
-            if (d > interactRange * 1.25f)
-            {
-                _playerInRange = false;
-                _player = null;
-                if (s_activeOwner == this) HidePrompt();
-                return;
-            }
-        }
-        if (!_isTransitioning && WasInteractPressedThisFrame())
-            Toggle();
+        // Prompt-driven E-toggle removed. The door is now fully automatic; the
+        // E key no longer affects this door.
     }
 
     private static bool WasInteractPressedThisFrame()

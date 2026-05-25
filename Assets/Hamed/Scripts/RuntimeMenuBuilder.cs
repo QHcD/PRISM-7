@@ -204,8 +204,9 @@ public class RuntimeMenuBuilder : MonoBehaviour
         eventSystemObject.SetActive(true);
     }
 
-    void BuildCurrentScreen()
+    public void BuildCurrentScreen()
     {
+        EnsureGameManager();
         GameObject existingCanvas = GameObject.Find("NeonCanvas");
         if (existingCanvas != null)
             DestroyUiObject(existingCanvas);
@@ -1818,10 +1819,15 @@ public class RuntimeMenuBuilder : MonoBehaviour
         // It will keep playing across menu reloads, stop it only when leaving to gameplay
     }
 
-    TMP_FontAsset ResolveMenuFont()
+    public TMP_FontAsset ResolveMenuFont()
     {
         if (customFont != null)
             return customFont;
+
+        // Try sleek/premium Azonix font first!
+        TMP_FontAsset azonix = Resources.Load<TMP_FontAsset>("Fonts/Azonix SDF");
+        if (azonix != null)
+            return azonix;
 
         TMP_FontAsset lib = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
         if (lib != null)
@@ -1831,7 +1837,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         for (int i = 0; i < fonts.Length; i++)
         {
             TMP_FontAsset font = fonts[i];
-            if (font != null && (font.name.Contains("Arizona") || font.name.Contains("Azonix")))
+            if (font != null && (font.name.Contains("Azonix") || font.name.Contains("Arizona")))
                 return font;
         }
 

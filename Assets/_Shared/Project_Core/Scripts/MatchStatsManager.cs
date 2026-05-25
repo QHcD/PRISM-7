@@ -88,6 +88,35 @@ public class MatchStatsManager : MonoBehaviour
         if (string.IsNullOrWhiteSpace(id))
             return;
 
+        // SP local-player dedupe: HUDManager.InitializeSinglePlayerGameplay,
+        // PlayerHealth.Awake, and any future ensure-path can each call this for
+        // the same local player. They each pass a different InstanceID-based ID
+        // (BuildCombatantId(this) vs BuildCombatantId(playerHealth) etc.) — in
+        // single-player there is one and only one local player, so we collapse
+        // any existing isPlayer entry onto the incoming id rather than spawning
+        // a second "Hamed" row. Multiplayer keeps per-actor IDs (photon:N),
+        // so we skip dedupe there.
+        if (isPlayer && !MultiplayerMode.IsMultiplayer)
+        {
+            string existingPlayerKey = null;
+            foreach (var kvp in _combatants)
+            {
+                if (kvp.Value != null && kvp.Value.IsPlayer)
+                {
+                    existingPlayerKey = kvp.Key;
+                    break;
+                }
+            }
+
+            if (existingPlayerKey != null && existingPlayerKey != id)
+            {
+                CombatantData previous = _combatants[existingPlayerKey];
+                _combatants.Remove(existingPlayerKey);
+                previous.Id = id;
+                _combatants[id] = previous;
+            }
+        }
+
         if (!_combatants.TryGetValue(id, out CombatantData combatant))
         {
             combatant = new CombatantData

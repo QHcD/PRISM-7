@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.IO;
 using Unity.AI.Navigation;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 /// <summary>
 /// Builds a dense, enclosed sci-fi warehouse arena prefab from the kit.
@@ -15,12 +17,13 @@ using UnityEngine;
 public static class SciFiArenaBuilder
 {
     private const string KitRoot = "Assets/SciFi Warehouse Kit/Prefabs";
+    private const string DemoScenePath = "Assets/SciFi Warehouse Kit/Demo/Scene/SciFi_Warehouse.unity";
     private const string OutputDir = "Assets/MohamedAltajer/Prefabs/Environment/Resources/Maps/SciFiArena";
     private const string OutputPrefab = OutputDir + "/SciFiArena.prefab";
     private const string VersionFile = OutputDir + "/.builder_version";
 
     // Bump when layout/content meaningfully changes — forces auto-rebuild.
-    private const int BuilderVersion = 19;
+    private const int BuilderVersion = 24;
 
     private const float ModuleSize = 6f;
     private const int GridSize = 9;            // 54m x 54m arena
@@ -32,12 +35,14 @@ public static class SciFiArenaBuilder
 
     static SciFiArenaBuilder()
     {
+        EditorApplication.delayCall -= AutoBuildIfMissing;
         EditorApplication.delayCall += AutoBuildIfMissing;
     }
 
     private static void AutoBuildIfMissing()
     {
         if (Application.isPlaying) return;
+        if (EditorApplication.isPlayingOrWillChangePlaymode) return;
         if (EditorApplication.isCompiling || EditorApplication.isUpdating) return;
 
         bool prefabExists = File.Exists(OutputPrefab);
@@ -72,7 +77,30 @@ public static class SciFiArenaBuilder
     [MenuItem("Tools/PRISM-7/Build SciFi Arena Prefab")]
     public static void BuildArenaPrefab()
     {
+        if (EditorApplication.isPlayingOrWillChangePlaymode || EditorApplication.isPlaying)
+        {
+            Debug.LogError("[SciFiArenaBuilder] Cannot build while Play Mode is active. Stop Play Mode first.");
+            return;
+        }
+
         SciFiKitURPMaterialFixer.Convert();
+        EnsureDir(OutputDir);
+
+        if (TryBuildPrefabFromDemoScene(out GameObject demoSaved))
+        {
+            File.WriteAllText(VersionFile, BuilderVersion.ToString());
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+            Debug.Log($"[SciFiArena] Built v{BuilderVersion} from complete demo warehouse modules: {OutputPrefab}");
+            Selection.activeObject = demoSaved;
+            EditorGUIUtility.PingObject(demoSaved);
+            return;
+        }
+
+        Debug.LogError("[SciFiArena] Build aborted. Low-level procedural warehouse assembly is disabled; fix the demo scene reference instead.");
+        bool allowLegacyFallback = false;
+        if (!allowLegacyFallback)
+            return;
 
         KitRefs k = LoadKit();
         if (k.floor == null || k.wallPlain == null)
@@ -80,8 +108,6 @@ public static class SciFiArenaBuilder
             Debug.LogError("[SciFiArena] Critical prefabs missing (floor/wall). Cannot build.");
             return;
         }
-
-        EnsureDir(OutputDir);
 
         GameObject root = new GameObject("SciFiArena");
         Transform floors = MakeChild(root.transform, "Floors");
@@ -296,6 +322,436 @@ public static class SciFiArenaBuilder
     }
 
     private static Quaternion Yaw(float yawDeg) => Quaternion.Euler(0f, yawDeg, 0f);
+
+    private static bool TryBuildPrefabFromDemoScene(out GameObject savedPrefab)
+    {
+        savedPrefab = null;
+        if (EditorApplication.isPlayingOrWillChangePlaymode || EditorApplication.isPlaying)
+        {
+            Debug.LogError("[SciFiArenaBuilder] Cannot build while Play Mode is active. Stop Play Mode first.");
+            return false;
+        }
+
+        if (!File.Exists(DemoScenePath))
+        {
+            Debug.LogError("[SciFiArena] Demo warehouse scene missing: " + DemoScenePath);
+            return false;
+        }
+
+        Scene previousActive = SceneManager.GetActiveScene();
+        Scene demoScene = default;
+        GameObject root = null;
+
+        try
+        {
+            demoScene = EditorSceneManager.OpenScene(DemoScenePath, OpenSceneMode.Additive);
+            if (!demoScene.IsValid() || !demoScene.isLoaded)
+                return false;
+
+            root = new GameObject("SciFiArena");
+            root.transform.localPosition = Vector3.zero;
+            root.transform.localRotation = Quaternion.identity;
+            root.transform.localScale = Vector3.one;
+            Transform modules = MakeChild(root.transform, "DemoWarehouseModules");
+            modules.localPosition = Vector3.zero;
+            modules.localRotation = Quaternion.identity;
+            modules.localScale = Vector3.one;
+
+            GameObject[] sceneRoots = demoScene.GetRootGameObjects();
+            int copiedRoots = 0;
+            for (int i = 0; i < sceneRoots.Length; i++)
+            {
+                GameObject sceneRoot = sceneRoots[i];
+                if (sceneRoot == null || !ShouldCopyDemoWarehouseRoot(sceneRoot))
+                    continue;
+
+                GameObject copy = Object.Instantiate(sceneRoot);
+                copy.name = sceneRoot.name;
+                copy.transform.SetParent(modules, worldPositionStays: false);
+                copy.transform.localPosition = Vector3.zero;
+                copy.transform.localRotation = Quaternion.identity;
+                copy.transform.localScale = Vector3.one;
+                copiedRoots++;
+            }
+
+            if (copiedRoots == 0)
+            {
+                Debug.LogError("[SciFiArena] Demo scene opened but no warehouse module roots were copied.");
+                return false;
+            }
+
+            CleanupCopiedDemoHierarchy(root);
+            AlignWarehouseRootToGrid(modules);
+            EnsureWarehouseColliders(root.transform);
+            MarkWarehouseStatic(root.transform);
+            int proxyCount = BuildNavMeshProxyColliders(root.transform, modules);
+            if (proxyCount <= 0)
+            {
+                Debug.LogError("[SciFiArenaBuilder] Build aborted: no walkable NavMesh proxy colliders were generated from the demo warehouse.");
+                return false;
+            }
+
+            Transform spawns = MakeChild(root.transform, "SpawnPoints");
+            BuildSpawnPoints(spawns, modules);
+            AddNavMeshSurface(root);
+            LogSciFiArenaValidation(root.transform, modules, root.transform.Find("SciFiNavMeshProxyColliders"), spawns.Find("PlayerSpawn"));
+
+            savedPrefab = PrefabUtility.SaveAsPrefabAsset(root, OutputPrefab);
+            return savedPrefab != null;
+        }
+        finally
+        {
+            if (root != null)
+                Object.DestroyImmediate(root);
+            if (demoScene.IsValid() && demoScene.isLoaded)
+                EditorSceneManager.CloseScene(demoScene, true);
+            if (previousActive.IsValid())
+                SceneManager.SetActiveScene(previousActive);
+        }
+    }
+
+    private static bool ShouldCopyDemoWarehouseRoot(GameObject root)
+    {
+        if (root == null) return false;
+
+        // These are the complete authored environment roots in
+        // Assets/SciFi Warehouse Kit/Demo/Scene/SciFi_Warehouse.unity.
+        // Do not replace this with selected child folders such as Floor Tiles.
+        return root.name == "Floors & Floor Props"
+            || root.name == "Walls"
+            || root.name == "Ceilings"
+            || root.name == "Corridors";
+    }
+
+    private static void CleanupCopiedDemoHierarchy(GameObject root)
+    {
+        if (root == null) return;
+
+        foreach (Camera cam in root.GetComponentsInChildren<Camera>(true))
+            if (cam != null) Object.DestroyImmediate(cam.gameObject);
+        foreach (AudioListener listener in root.GetComponentsInChildren<AudioListener>(true))
+            if (listener != null) Object.DestroyImmediate(listener);
+
+        MonoBehaviour[] behaviours = root.GetComponentsInChildren<MonoBehaviour>(true);
+        for (int i = behaviours.Length - 1; i >= 0; i--)
+        {
+            MonoBehaviour b = behaviours[i];
+            if (b == null) continue;
+            string typeName = b.GetType().Name;
+            if (typeName == "PlayerMovement" || typeName == "MouseComponent" || typeName == "PushPhysics")
+                Object.DestroyImmediate(b);
+        }
+
+        Transform[] all = root.GetComponentsInChildren<Transform>(true);
+        for (int i = all.Length - 1; i >= 0; i--)
+        {
+            Transform t = all[i];
+            if (t == null || t == root.transform) continue;
+            string n = t.name.ToLowerInvariant();
+            if (n.Contains("dust particles") || n.Contains("backgroundmusic") || n.Contains("groundcheck"))
+                Object.DestroyImmediate(t.gameObject);
+        }
+
+        RemoveMissingScriptsRecursive(root);
+    }
+
+    private static int RemoveMissingScriptsRecursive(GameObject root)
+    {
+        if (root == null) return 0;
+        int removed = GameObjectUtility.RemoveMonoBehavioursWithMissingScript(root);
+        for (int i = 0; i < root.transform.childCount; i++)
+            removed += RemoveMissingScriptsRecursive(root.transform.GetChild(i).gameObject);
+        return removed;
+    }
+
+    private static void AlignWarehouseRootToGrid(Transform modules)
+    {
+        if (modules == null) return;
+        if (!TryGetRendererBounds(modules, out Bounds b)) return;
+
+        Bounds walkableBounds = b;
+        bool hasWalkableBounds = TryGetWalkableRendererBounds(modules, out walkableBounds);
+        float groundY = hasWalkableBounds ? walkableBounds.min.y : b.min.y;
+
+        Vector3 shift = new Vector3(-b.center.x, -groundY, -b.center.z);
+        ShiftWarehouseContent(modules, shift);
+
+        if (!TryGetRendererBounds(modules, out b)) return;
+        hasWalkableBounds = TryGetWalkableRendererBounds(modules, out walkableBounds);
+        groundY = hasWalkableBounds ? walkableBounds.min.y : b.min.y;
+        float yCorrection = -groundY;
+        Vector3 correction = new Vector3(
+            Mathf.Round(b.center.x / ModuleSize) * ModuleSize - b.center.x,
+            yCorrection,
+            Mathf.Round(b.center.z / ModuleSize) * ModuleSize - b.center.z);
+        ShiftWarehouseContent(modules, correction);
+        modules.localPosition = Vector3.zero;
+        modules.localRotation = Quaternion.identity;
+        modules.localScale = Vector3.one;
+
+        Debug.Log($"[SciFiArena] Demo warehouse aligned as one root: modulesLocal={modules.localPosition}, boundsSize={b.size}, walkableGroundY={groundY:0.00}, grid={ModuleSize}m");
+    }
+
+    private static void ShiftWarehouseContent(Transform modules, Vector3 worldShift)
+    {
+        if (modules == null || worldShift == Vector3.zero)
+            return;
+
+        for (int i = 0; i < modules.childCount; i++)
+        {
+            Transform root = modules.GetChild(i);
+            for (int c = 0; c < root.childCount; c++)
+                root.GetChild(c).position += worldShift;
+            root.localPosition = Vector3.zero;
+            root.localRotation = Quaternion.identity;
+            root.localScale = Vector3.one;
+        }
+    }
+
+    private static void LogSciFiArenaValidation(Transform root, Transform modules, Transform proxyRoot, Transform playerSpawn)
+    {
+        TryGetRendererBounds(modules, out Bounds moduleBounds);
+        TryGetColliderBounds(proxyRoot, out Bounds proxyBounds);
+        Vector3 spawnPosition = playerSpawn != null ? playerSpawn.position : Vector3.positiveInfinity;
+        Bounds expandedProxy = proxyBounds;
+        expandedProxy.Expand(new Vector3(2f, 4f, 2f));
+        bool spawnInsideProxy = playerSpawn != null && expandedProxy.Contains(spawnPosition);
+        Debug.Log($"[SciFiArenaValidation] modules center={moduleBounds.center} size={moduleBounds.size}");
+        Debug.Log($"[SciFiArenaValidation] proxies center={proxyBounds.center} size={proxyBounds.size}");
+        Debug.Log($"[SciFiArenaValidation] PlayerSpawn world={spawnPosition} insideProxyBounds={spawnInsideProxy}");
+        if (root != null)
+            Debug.Log($"[SciFiArenaValidation] root localPosition={root.localPosition} localRotation={root.localRotation.eulerAngles} localScale={root.localScale}");
+    }
+
+    private static bool TryGetColliderBounds(Transform root, out Bounds bounds)
+    {
+        bounds = default;
+        bool hasBounds = false;
+        if (root == null) return false;
+
+        Collider[] colliders = root.GetComponentsInChildren<Collider>(true);
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            Collider c = colliders[i];
+            if (c == null || c.isTrigger) continue;
+            if (!hasBounds)
+            {
+                bounds = c.bounds;
+                hasBounds = true;
+            }
+            else
+            {
+                bounds.Encapsulate(c.bounds);
+            }
+        }
+
+        return hasBounds;
+    }
+
+    private static bool TryGetRendererBounds(Transform root, out Bounds bounds)
+    {
+        bounds = default;
+        bool hasBounds = false;
+        Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer r = renderers[i];
+            if (r == null || r is ParticleSystemRenderer) continue;
+            if (!hasBounds)
+            {
+                bounds = r.bounds;
+                hasBounds = true;
+            }
+            else
+            {
+                bounds.Encapsulate(r.bounds);
+            }
+        }
+        return hasBounds;
+    }
+
+    private static bool TryGetWalkableRendererBounds(Transform root, out Bounds bounds)
+    {
+        bounds = default;
+        bool hasBounds = false;
+        if (root == null) return false;
+
+        Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer r = renderers[i];
+            if (!IsNavMeshProxyCandidate(r))
+                continue;
+
+            if (!hasBounds)
+            {
+                bounds = r.bounds;
+                hasBounds = true;
+            }
+            else
+            {
+                bounds.Encapsulate(r.bounds);
+            }
+        }
+
+        return hasBounds;
+    }
+
+    private static void EnsureWarehouseColliders(Transform root)
+    {
+        MeshCollider[] existingMeshColliders = root.GetComponentsInChildren<MeshCollider>(true);
+        for (int i = existingMeshColliders.Length - 1; i >= 0; i--)
+        {
+            MeshCollider mc = existingMeshColliders[i];
+            if (mc == null || mc.sharedMesh == null || mc.sharedMesh.isReadable)
+                continue;
+
+            GameObject go = mc.gameObject;
+            Vector3 center = mc.sharedMesh.bounds.center;
+            Vector3 size = mc.sharedMesh.bounds.size;
+            Object.DestroyImmediate(mc);
+
+            BoxCollider box = go.GetComponent<BoxCollider>();
+            if (box == null)
+                box = go.AddComponent<BoxCollider>();
+            box.center = center;
+            box.size = size;
+        }
+
+        MeshFilter[] meshes = root.GetComponentsInChildren<MeshFilter>(true);
+        for (int i = 0; i < meshes.Length; i++)
+        {
+            MeshFilter mf = meshes[i];
+            if (mf == null || mf.sharedMesh == null || mf.GetComponent<Collider>() != null)
+                continue;
+
+            if (mf.sharedMesh.isReadable)
+            {
+                MeshCollider mc = mf.gameObject.AddComponent<MeshCollider>();
+                mc.sharedMesh = mf.sharedMesh;
+                mc.convex = false;
+            }
+            else
+            {
+                BoxCollider box = mf.gameObject.AddComponent<BoxCollider>();
+                box.center = mf.sharedMesh.bounds.center;
+                box.size = mf.sharedMesh.bounds.size;
+            }
+        }
+    }
+
+    private static int BuildNavMeshProxyColliders(Transform root, Transform warehouseRoot)
+    {
+        if (root == null || warehouseRoot == null)
+            return 0;
+
+        Transform existing = root.Find("SciFiNavMeshProxyColliders");
+        if (existing != null)
+            Object.DestroyImmediate(existing.gameObject);
+
+        Transform proxyRoot = MakeChild(root, "SciFiNavMeshProxyColliders");
+        int envLayer = LayerMask.NameToLayer("Environment");
+        if (envLayer >= 0) proxyRoot.gameObject.layer = envLayer;
+        proxyRoot.gameObject.isStatic = true;
+        int proxyCount = 0;
+
+        Renderer[] renderers = warehouseRoot.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer renderer = renderers[i];
+            if (!IsNavMeshProxyCandidate(renderer))
+                continue;
+
+            Bounds b = renderer.bounds;
+            GameObject proxy = new GameObject("NavMeshProxy_" + renderer.name);
+            proxy.transform.SetParent(proxyRoot, false);
+            proxy.transform.position = new Vector3(b.center.x, b.max.y - 0.04f, b.center.z);
+            proxy.transform.rotation = Quaternion.identity;
+            proxy.transform.localScale = Vector3.one;
+            if (envLayer >= 0) proxy.layer = envLayer;
+            proxy.isStatic = true;
+
+            BoxCollider box = proxy.AddComponent<BoxCollider>();
+            box.center = Vector3.zero;
+            box.size = new Vector3(Mathf.Max(0.5f, b.size.x), 0.08f, Mathf.Max(0.5f, b.size.z));
+
+            NavMeshModifier modifier = proxy.AddComponent<NavMeshModifier>();
+            modifier.ignoreFromBuild = false;
+
+            proxyCount++;
+        }
+
+        Debug.Log($"[SciFiArenaBuilder] Generated {proxyCount} NavMesh proxy collider(s) under SciFiNavMeshProxyColliders.");
+        return proxyCount;
+    }
+
+    private static bool IsNavMeshProxyCandidate(Renderer renderer)
+    {
+        if (renderer == null || renderer is ParticleSystemRenderer || renderer is TrailRenderer || renderer is LineRenderer)
+            return false;
+
+        string objectName = renderer.name.ToLowerInvariant();
+        bool underFloorTiles = false;
+        bool underCatwalks = false;
+        bool underCorridors = false;
+        for (Transform t = renderer.transform; t != null; t = t.parent)
+        {
+            string n = t.name.ToLowerInvariant();
+            if (n == "floor tiles" || n == "floors & floor props")
+                underFloorTiles = true;
+            if (n.Contains("catwalk"))
+                underCatwalks = true;
+            if (n == "corridors")
+                underCorridors = true;
+
+            if (n.Contains("rail") || n.Contains("railing") || n.Contains("wall")
+                || n.Contains("ceiling") || n.Contains("roof") || n.Contains("pipe")
+                || n.Contains("duct") || n.Contains("light") || n.Contains("beam")
+                || n.Contains("pillar") || n.Contains("support") || n.Contains("door")
+                || n.Contains("shelf") || n.Contains("crate") || n.Contains("barrel")
+                || n.Contains("pallet") || n.Contains("misc props")
+                || n.Contains("spawnpoints") || n.Contains("camera") || n.Contains("audio")
+                || n.Contains("dust") || n.Contains("particle"))
+                return false;
+        }
+
+        if (underFloorTiles && (objectName.Contains("floor") || objectName.Contains("ground")))
+            return true;
+
+        if (underCatwalks && !objectName.Contains("rail") && !objectName.Contains("pillar")
+            && (objectName.Contains("catwalk") || objectName.Contains("walkway")
+                || objectName.Contains("stair") || objectName.Contains("step")
+                || objectName.Contains("platform")))
+            return true;
+
+        if (underCorridors && (objectName.Contains("floor") || objectName.Contains("ground")
+            || objectName.Contains("corridor") || objectName.Contains("stair")
+            || objectName.Contains("step") || objectName.Contains("platform")))
+            return true;
+
+        Bounds b = renderer.bounds;
+        float horizontal = Mathf.Max(b.size.x, b.size.z);
+        return (underFloorTiles || underCatwalks || underCorridors)
+            && b.center.y <= 6.5f
+            && horizontal >= 2.5f
+            && b.size.y <= Mathf.Max(0.6f, horizontal * 0.08f)
+            && !objectName.Contains("trim")
+            && !objectName.Contains("side");
+    }
+
+    private static void MarkWarehouseStatic(Transform root)
+    {
+        int envLayer = LayerMask.NameToLayer("Environment");
+        Transform[] all = root.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < all.Length; i++)
+        {
+            GameObject go = all[i].gameObject;
+            if (envLayer >= 0) go.layer = envLayer;
+            go.isStatic = true;
+            StaticEditorFlags flags = StaticEditorFlags.BatchingStatic | StaticEditorFlags.NavigationStatic;
+            GameObjectUtility.SetStaticEditorFlags(go, flags);
+        }
+    }
 
     // ---------------- Floors / Ceiling ----------------
 
@@ -1238,12 +1694,75 @@ public static class SciFiArenaBuilder
         }
     }
 
+    private static void BuildSpawnPoints(Transform parent, Transform warehouseRoot)
+    {
+        if (warehouseRoot == null || !TryGetRendererBounds(warehouseRoot, out Bounds geometryBounds))
+        {
+            BuildSpawnPoints(parent);
+            return;
+        }
+
+        Bounds walkableBounds = geometryBounds;
+        bool hasWalkableBounds = TryGetWalkableRendererBounds(warehouseRoot, out walkableBounds);
+        Bounds spawnBounds = hasWalkableBounds ? walkableBounds : geometryBounds;
+
+        float insetX = Mathf.Min(6f, Mathf.Max(2f, spawnBounds.extents.x * 0.18f));
+        float insetZ = Mathf.Min(6f, Mathf.Max(2f, spawnBounds.extents.z * 0.18f));
+        float xMin = SnapToGrid(spawnBounds.min.x + insetX);
+        float xMax = SnapToGrid(spawnBounds.max.x - insetX);
+        float zMin = SnapToGrid(spawnBounds.min.z + insetZ);
+        float zMax = SnapToGrid(spawnBounds.max.z - insetZ);
+        float xMid = SnapToGrid(spawnBounds.center.x);
+        float zMid = SnapToGrid(spawnBounds.center.z);
+        float y = spawnBounds.min.y + 1f;
+
+        GameObject player = new GameObject("PlayerSpawn");
+        player.transform.SetParent(parent, false);
+        player.transform.localPosition = parent.InverseTransformPoint(new Vector3(xMid, y, SnapToGrid(Mathf.Lerp(zMin, zMid, 0.5f))));
+
+        Vector3[] enemyPositions =
+        {
+            new Vector3(xMid, y, zMid),
+            new Vector3(xMin, y, zMid),
+            new Vector3(xMax, y, zMid),
+            new Vector3(xMid, y, zMin),
+            new Vector3(xMid, y, zMax),
+            new Vector3(xMin, y, zMin),
+            new Vector3(xMax, y, zMin),
+            new Vector3(xMin, y, zMax),
+            new Vector3(xMax, y, zMax),
+            new Vector3(SnapToGrid(Mathf.Lerp(xMin, xMid, 0.5f)), y, SnapToGrid(Mathf.Lerp(zMin, zMid, 0.5f))),
+            new Vector3(SnapToGrid(Mathf.Lerp(xMax, xMid, 0.5f)), y, SnapToGrid(Mathf.Lerp(zMin, zMid, 0.5f))),
+            new Vector3(SnapToGrid(Mathf.Lerp(xMin, xMid, 0.5f)), y, SnapToGrid(Mathf.Lerp(zMax, zMid, 0.5f))),
+            new Vector3(SnapToGrid(Mathf.Lerp(xMax, xMid, 0.5f)), y, SnapToGrid(Mathf.Lerp(zMax, zMid, 0.5f))),
+            new Vector3(xMin, y, SnapToGrid(Mathf.Lerp(zMin, zMax, 0.25f))),
+            new Vector3(xMax, y, SnapToGrid(Mathf.Lerp(zMin, zMax, 0.25f))),
+            new Vector3(xMid, y, SnapToGrid(Mathf.Lerp(zMin, zMax, 0.75f))),
+        };
+
+        for (int i = 0; i < enemyPositions.Length; i++)
+        {
+            GameObject e = new GameObject($"EnemySpawn_{i:00}");
+            e.transform.SetParent(parent, false);
+            e.transform.localPosition = parent.InverseTransformPoint(enemyPositions[i]);
+        }
+    }
+
+    private static float SnapToGrid(float value)
+    {
+        return Mathf.Round(value / ModuleSize) * ModuleSize;
+    }
+
     // ---------------- NavMesh + Minimap ----------------
 
     private static void AddNavMeshSurface(GameObject root)
     {
-        NavMeshSurface surface = root.AddComponent<NavMeshSurface>();
-        surface.collectObjects = CollectObjects.All;
+        Transform proxyRoot = root.transform.Find("SciFiNavMeshProxyColliders");
+        GameObject surfaceRoot = proxyRoot != null ? proxyRoot.gameObject : root;
+        NavMeshSurface surface = surfaceRoot.GetComponent<NavMeshSurface>();
+        if (surface == null)
+            surface = surfaceRoot.AddComponent<NavMeshSurface>();
+        surface.collectObjects = CollectObjects.Children;
         surface.useGeometry = UnityEngine.AI.NavMeshCollectGeometry.PhysicsColliders;
         surface.defaultArea = 0;
         surface.layerMask = ~0;
