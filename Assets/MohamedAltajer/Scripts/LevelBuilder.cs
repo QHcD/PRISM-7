@@ -542,7 +542,11 @@ public class LevelBuilder : MonoBehaviour
     {
         yield return new WaitForFixedUpdate();
         yield return WaitForSciFiArenaCoreReady();
+        if (useSciFiArena)
+            Debug.Log($"[SciFiRestart] arena rebuilt={IsSciFiArenaCoreReady()}");
         yield return BuildRuntimeNavMeshWhenSettled();
+        if (useSciFiArena)
+            Debug.Log($"[SciFiRestart] navmesh ready={_navMeshReady}");
         CompleteEnvironmentInitialization(enemyRoot);
         _buildRoutine = null;
     }
@@ -712,7 +716,7 @@ public class LevelBuilder : MonoBehaviour
         _runtimeInitializationComplete = false;
         _runtimeBuildInProgress = false;
         _lastNavSourceDiagnostics = default;
-        LevelInteriorSpawnResolver.ResetDiagnostics();
+        LevelInteriorSpawnResolver.ClearSpawnCache();
         if (useSciFiArena)
             SetExistingPlayersActive(false);
         _sciFiNavMeshDataInstance.Remove();
@@ -3180,6 +3184,102 @@ public class LevelBuilder : MonoBehaviour
 
         if (controller.equippedWeaponObject != null)
             SetLayerRecursive(controller.equippedWeaponObject, enemy.layer);
+
+        // Surgical port from backup: verify the enemy weapon is actually
+        // attached + visible, retry once with the same prefab if not.
+        RestoreEnemyWeaponPresence(controller, weaponPrefab, targetSize, level);
+    }
+
+    private static void RestorePlayerWeaponPresence(PlayerController player)
+    {
+        if (player == null)
+            return;
+
+        // Mirrors how PlayerController itself chooses a level on Start: MP
+        // reads MpRoomConfig, SP uses GameManager.currentLevel. Calling
+        // GetEquippedWeaponLevel() returns either the live equipped level
+        // (after Start has run) or the canonical SP level — never overriding
+        // a multiplayer-assigned level.
+        int level = player.GetEquippedWeaponLevel();
+        if (level <= 0) level = 1;
+
+        // Force a fresh attach so a stale/destroyed equippedWeaponObject from
+        // before the rebuild is never reused. ForceReattachWeapon destroys
+        // any previous instance, resets the cache, and re-runs the full
+        // backup equip path through EquipWeaponForLevel.
+        player.ForceReattachWeapon(level);
+
+        GameObject weapon = player.equippedWeaponObject;
+        bool attached = WeaponPresenceIsValid(weapon, out string prefabName, out string socketName, out int rendererCount);
+
+        Debug.Log("[WeaponRestore] backup logic applied");
+        Debug.Log($"[WeaponRestore] socket={socketName}");
+        Debug.Log($"[WeaponRestore] prefab={prefabName}");
+        Debug.Log($"[WeaponRestore] renderer count={rendererCount}");
+        Debug.Log($"[WeaponRestore] player weapon attached={attached}");
+    }
+
+    private static void RestoreEnemyWeaponPresence(EnemyController controller, GameObject weaponPrefab, float targetSize, int level)
+    {
+        if (controller == null)
+            return;
+
+        GameObject weapon = controller.equippedWeaponObject;
+        bool attached = WeaponPresenceIsValid(weapon, out string prefabName, out string socketName, out int rendererCount);
+
+        // Retry the exact backup path once if the first attach left no
+        // visible weapon (no GO, zero renderers, or scale collapsed to 0).
+        if (!attached && weaponPrefab != null)
+        {
+            if (weapon != null)
+            {
+                Object.Destroy(weapon);
+                controller.equippedWeaponObject = null;
+            }
+            controller.AttachWeaponToHand(weaponPrefab, targetSize, level);
+            if (controller.equippedWeaponObject != null)
+                SetLayerRecursive(controller.equippedWeaponObject, controller.gameObject.layer);
+            weapon = controller.equippedWeaponObject;
+            attached = WeaponPresenceIsValid(weapon, out prefabName, out socketName, out rendererCount);
+        }
+
+        Debug.Log($"[WeaponRestore] socket={socketName}");
+        Debug.Log($"[WeaponRestore] prefab={prefabName}");
+        Debug.Log($"[WeaponRestore] renderer count={rendererCount}");
+        Debug.Log($"[WeaponRestore] enemy weapon attached={attached}");
+    }
+
+    private static bool WeaponPresenceIsValid(GameObject weapon, out string prefabName, out string socketName, out int rendererCount)
+    {
+        prefabName = "<null>";
+        socketName = "<none>";
+        rendererCount = 0;
+
+        if (weapon == null)
+            return false;
+
+        prefabName = weapon.name;
+        socketName = weapon.transform.parent != null ? weapon.transform.parent.name : "<none>";
+
+        if (!weapon.activeSelf)
+            weapon.SetActive(true);
+
+        Renderer[] renderers = weapon.GetComponentsInChildren<Renderer>(true);
+        int enabledCount = 0;
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer r = renderers[i];
+            if (r == null) continue;
+            if (!r.enabled) r.enabled = true;
+            enabledCount++;
+        }
+        rendererCount = enabledCount;
+
+        Vector3 ls = weapon.transform.localScale;
+        if (Mathf.Approximately(ls.x, 0f) || Mathf.Approximately(ls.y, 0f) || Mathf.Approximately(ls.z, 0f))
+            weapon.transform.localScale = Vector3.one;
+
+        return enabledCount > 0;
     }
 
     /// <summary>
@@ -3614,6 +3714,10 @@ public class LevelBuilder : MonoBehaviour
         EnsureComponent<PlayerHealth>(playerController.gameObject);
         MeleeBodyTargeting.EnsureMeleeBodyCollider(playerController.transform);
         playerController.RefreshGameplayPreferences();
+
+        // Surgical port from backup: guarantee the player has a visible
+        // weapon attached to the right-hand socket after spawn / restart.
+        RestorePlayerWeaponPresence(playerController);
 
         // ── Force the camera to snap to the new position immediately ────────
         // Without this, the camera lerps from (0,0,0) to the player over

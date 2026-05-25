@@ -256,13 +256,6 @@ public static class WeaponLoadoutCatalog
             return prefab;
         }
 
-        if (Mathf.Clamp(level, 1, 16) == 8)
-        {
-            targetSize = loadout.TargetSize;
-            Debug.LogError("[WeaponLoadoutCatalog] Level 8 Hammer prefab missing. Refusing knife fallback so the missing hammer is visible in logs.");
-            return null;
-        }
-
         Debug.LogWarning($"[WeaponLoadoutCatalog] Level {level} weapon missing — trying fallbacks.");
 
         for (int i = 0; i < FallbackPaths.Length; i++)

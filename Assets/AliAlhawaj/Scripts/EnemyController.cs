@@ -3942,6 +3942,8 @@ public class EnemyController : MonoBehaviour, IDamageable
                 _equippedWeaponHitbox = wh;
                 _equippedWeaponPrefab = weaponPrefab;
                 _equippedWeaponLevel = level;
+                ForceWeaponRenderable(equippedWeaponObject);
+                LogWeaponRestoreState("enemy", equippedWeaponObject, weaponPrefab);
                 _weaponAttachInProgress = false;
                 return;
             }
@@ -3964,11 +3966,15 @@ public class EnemyController : MonoBehaviour, IDamageable
         ApplySavedRuntimeGripValuesForLevel(level);
 
         // ── 1. Find right-hand bone ─────────────────────────────────────────
-        Transform handBone = weaponAttachPoint;
+        Transform handBone = null;
+        if (_anim != null && _anim.isHuman)
+            handBone = _anim.GetBoneTransform(HumanBodyBones.RightHand);
+        if (handBone == null)
+            handBone = FindBoneByName(transform, "bip_hand_R");
+        if (handBone == null)
+            handBone = weaponAttachPoint;
         if (handBone == null)
             handBone = FindHandBone(gameObject);
-        if (handBone == null && _anim != null && _anim.isHuman)
-            handBone = _anim.GetBoneTransform(HumanBodyBones.RightHand);
 
         if (handBone == null)
         {
@@ -4077,6 +4083,9 @@ public class EnemyController : MonoBehaviour, IDamageable
             ApplyMorgensternEnemyGripPose(equippedWeaponObject.transform);
         }
 
+        ForceWeaponRenderable(equippedWeaponObject);
+        LogWeaponRestoreState("enemy", equippedWeaponObject, weaponPrefab);
+
         Debug.Log($"[EnemyController] '{name}' lvl={level} weapon → hand '{handBone.name}' " +
                   $"targetSize={desiredWorldSize} extent={weaponExtent} " +
                   $"localPosition={equippedWeaponObject.transform.localPosition} " +
@@ -4138,6 +4147,63 @@ public class EnemyController : MonoBehaviour, IDamageable
             if (grip != null)
                 katanaHandler.BindKatana(grip);
         }
+    }
+
+    private static void ForceWeaponRenderable(GameObject weapon)
+    {
+        if (weapon == null) return;
+
+        weapon.SetActive(true);
+        foreach (Transform child in weapon.GetComponentsInChildren<Transform>(true))
+            child.gameObject.SetActive(true);
+
+        Renderer[] renderers = weapon.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer renderer = renderers[i];
+            if (renderer == null) continue;
+            renderer.enabled = true;
+            renderer.forceRenderingOff = false;
+        }
+    }
+
+    private static void LogWeaponRestoreState(string actor, GameObject weapon, GameObject prefab)
+    {
+        int rendererCount = CountWeaponRenderers(weapon);
+        bool attached = weapon != null
+            && weapon.transform.parent != null
+            && rendererCount > 0
+            && HasNonZeroLocalScale(weapon.transform);
+
+        Debug.Log("[WeaponRestore] backup logic applied");
+        Debug.Log($"[WeaponRestore] {actor} weapon attached={attached}");
+        Debug.Log($"[WeaponRestore] socket={(weapon != null && weapon.transform.parent != null ? weapon.transform.parent.name : "<none>")}");
+        Debug.Log($"[WeaponRestore] prefab={(prefab != null ? prefab.name : (weapon != null ? weapon.name : "<null>"))}");
+        Debug.Log($"[WeaponRestore] renderer count={rendererCount}");
+    }
+
+    private static int CountWeaponRenderers(GameObject weapon)
+    {
+        if (weapon == null) return 0;
+
+        int count = 0;
+        Renderer[] renderers = weapon.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer renderer = renderers[i];
+            if (renderer != null && renderer.enabled && !renderer.forceRenderingOff)
+                count++;
+        }
+        return count;
+    }
+
+    private static bool HasNonZeroLocalScale(Transform t)
+    {
+        if (t == null) return false;
+        Vector3 scale = t.localScale;
+        return !Mathf.Approximately(scale.x, 0f)
+            && !Mathf.Approximately(scale.y, 0f)
+            && !Mathf.Approximately(scale.z, 0f);
     }
 
     private static Transform GetOrCreateWeaponSocket(Transform handBone)

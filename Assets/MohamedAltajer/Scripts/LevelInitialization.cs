@@ -65,6 +65,8 @@ public class LevelInitialization : MonoBehaviour
 
         BindCameraToPlayer();
         ForceWeaponReattach();
+        yield return null;
+        ForceEnemyWeaponReattach();
     }
 
     private static void AuditLevelColliders()
@@ -134,6 +136,75 @@ public class LevelInitialization : MonoBehaviour
         if (player == null) return;
         int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
         player.ForceReattachWeapon(level);
+    }
+
+    private static void ForceEnemyWeaponReattach()
+    {
+        int level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+        WeaponLoadout loadout = WeaponLoadoutCatalog.Get(level);
+        float targetSize = loadout.TargetSize;
+        GameObject weaponPrefab = loadout.LoadPrefab();
+        if (weaponPrefab == null)
+            weaponPrefab = WeaponLoadoutCatalog.LoadPrefabWithFallback(level, out targetSize);
+        if (weaponPrefab == null)
+            return;
+
+        EnemyController[] enemies = Object.FindObjectsByType<EnemyController>(
+            FindObjectsInactive.Include,
+            FindObjectsSortMode.None);
+
+        for (int i = 0; i < enemies.Length; i++)
+        {
+            EnemyController enemy = enemies[i];
+            if (enemy == null) continue;
+
+            if (enemy.equippedWeaponObject != null)
+            {
+                Object.Destroy(enemy.equippedWeaponObject);
+                enemy.equippedWeaponObject = null;
+            }
+
+            enemy.AttachWeaponToHand(weaponPrefab, targetSize, level);
+            string prefabName;
+            string socketName;
+            int rendererCount;
+            WeaponPresenceIsValid(enemy.equippedWeaponObject, out prefabName, out socketName, out rendererCount);
+            Debug.Log("[WeaponRestore] backup logic applied");
+            Debug.Log($"[WeaponRestore] enemy weapon attached={enemy.equippedWeaponObject != null && rendererCount > 0}");
+            Debug.Log($"[WeaponRestore] socket={socketName}");
+            Debug.Log($"[WeaponRestore] prefab={(weaponPrefab != null ? weaponPrefab.name : prefabName)}");
+            Debug.Log($"[WeaponRestore] renderer count={rendererCount}");
+        }
+    }
+
+    private static bool WeaponPresenceIsValid(GameObject weapon, out string prefabName, out string socketName, out int rendererCount)
+    {
+        prefabName = "<null>";
+        socketName = "<none>";
+        rendererCount = 0;
+
+        if (weapon == null)
+            return false;
+
+        prefabName = weapon.name;
+        socketName = weapon.transform.parent != null ? weapon.transform.parent.name : "<none>";
+        weapon.SetActive(true);
+
+        Renderer[] renderers = weapon.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer renderer = renderers[i];
+            if (renderer == null) continue;
+            renderer.enabled = true;
+            renderer.forceRenderingOff = false;
+            rendererCount++;
+        }
+
+        Vector3 scale = weapon.transform.localScale;
+        if (Mathf.Approximately(scale.x, 0f) || Mathf.Approximately(scale.y, 0f) || Mathf.Approximately(scale.z, 0f))
+            return false;
+
+        return weapon.transform.parent != null && rendererCount > 0;
     }
 
     private static void StopLobbyMusicForGameplay(string loadedSceneName)

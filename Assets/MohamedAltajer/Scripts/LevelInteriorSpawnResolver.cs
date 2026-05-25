@@ -9,11 +9,25 @@ public static class LevelInteriorSpawnResolver
     private const float FallbackNavSampleRadius = 28f;
     private const float SpawnLift = 0.5f;
 
+    // Hard rule: valid SciFiArena player spawns must sit near the playable floor,
+    // never on roof / top of walls. Y is measured relative to the playable floor.
+    private const float FloorBandMinOffset = -0.5f;
+    private const float FloorBandMaxOffset = 3.0f;
+
     private static bool _loggedSpawnFailure;
+    private static Vector3? _cachedSpawn;
 
     public static void ResetDiagnostics()
     {
         _loggedSpawnFailure = false;
+        _cachedSpawn = null;
+    }
+
+    public static void ClearSpawnCache()
+    {
+        _loggedSpawnFailure = false;
+        _cachedSpawn = null;
+        Debug.Log("[SciFiRestart] clearing old spawn cache");
     }
 
     public static bool RequiresInteriorSpawn
@@ -44,6 +58,9 @@ public static class LevelInteriorSpawnResolver
 
     public static bool TryResolveInteriorSpawn(PlayerController player, out Vector3 spawn)
     {
+        // Never reuse a position from before a rebuild. Each call selects fresh.
+        _cachedSpawn = null;
+
         Transform[] markers = ResolveSpawnReferences();
         if (markers.Length > 0)
         {
@@ -58,8 +75,15 @@ public static class LevelInteriorSpawnResolver
                 bool clearance = false;
                 if (TryResolveCandidate(marker.position, NavSampleRadius, player, out spawn, out navmesh, out clearance))
                 {
+                    _cachedSpawn = spawn;
+                    Debug.Log($"[SciFiRestart] selected indoor spawn={spawn} marker={marker.name}");
                     Debug.Log($"[SciFiSpawn] spawn via marker {marker.name} pos={spawn}");
+                    Debug.Log("[SciFiRestart] player spawned inside=true");
                     return true;
+                }
+                else
+                {
+                    Debug.Log($"[SciFiRestart] rejected roof/outside spawn={marker.position} marker={marker.name}");
                 }
             }
         }
@@ -71,10 +95,18 @@ public static class LevelInteriorSpawnResolver
             {
                 bool navmesh2 = false;
                 bool clearance2 = false;
-                if (TryResolveCandidate(fallbackSeeds[(start + i) % fallbackSeeds.Length], FallbackNavSampleRadius, player, out spawn, out navmesh2, out clearance2))
+                Vector3 seed = fallbackSeeds[(start + i) % fallbackSeeds.Length];
+                if (TryResolveCandidate(seed, FallbackNavSampleRadius, player, out spawn, out navmesh2, out clearance2))
                 {
+                    _cachedSpawn = spawn;
+                    Debug.Log($"[SciFiRestart] selected indoor spawn={spawn} via fallback#{i}");
                     Debug.Log($"[SciFiSpawn] spawn via fallback#{i} pos={spawn}");
+                    Debug.Log("[SciFiRestart] player spawned inside=true");
                     return true;
+                }
+                else
+                {
+                    Debug.Log($"[SciFiRestart] rejected roof/outside spawn={seed} fallback#{i}");
                 }
             }
         }
@@ -142,12 +174,28 @@ public static class LevelInteriorSpawnResolver
         if (!IsInsideArenaBounds(candidate))
             return false;
 
+        if (!IsOnPlayableFloor(candidate))
+            return false;
+
         clearance = HasCapsuleClearance(candidate, player);
         if (!clearance)
             return false;
 
         spawn = candidate;
         return true;
+    }
+
+    // Hard Y-band rule for SciFiArena: reject anything above floor + ~3m so
+    // roofs and tops of walls can never be picked as a player spawn.
+    private static bool IsOnPlayableFloor(Vector3 position)
+    {
+        if (!TryGetPlayableBounds(out Bounds bounds))
+            return false;
+
+        float floorY = bounds.min.y;
+        float minY = floorY + FloorBandMinOffset;
+        float maxY = floorY + FloorBandMaxOffset;
+        return position.y >= minY && position.y <= maxY;
     }
 
     private static bool TryBuildFallbackSeeds(out Vector3[] seeds)

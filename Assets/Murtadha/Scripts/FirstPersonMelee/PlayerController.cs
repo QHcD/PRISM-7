@@ -4782,6 +4782,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             equippedWeaponObject = BuildPrimitiveWeapon(level, fallbackSocket, loadout);
             equippedWeaponLevel = level;
             equippedWeaponHitbox = equippedWeaponObject != null ? equippedWeaponObject.GetComponent<WeaponHitbox>() : null;
+            ForceWeaponRenderable(equippedWeaponObject);
+            LogPlayerWeaponRestoreState(equippedWeaponObject, null);
             weaponAttachInProgress = false;
             return;
         }
@@ -4868,6 +4870,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
         WeaponLoadoutCatalog.ApplyRuntimeOverrides(level, prefab, weapon);
         RestoreWeaponSharedMaterialsFromPrefab(prefab, weapon);
+        ForceWeaponRenderable(weapon);
         if (katanaStyle)
         {
             ApplyWeaponGripPose(weapon.transform, PlayerKatanaGripLocalPosition, PlayerKatanaGripLocalEuler);
@@ -4884,6 +4887,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             weapon.transform.localEulerAngles,
             weapon.transform.localScale,
             ResolveWeaponEquipLogName(level, prefab, equippedWeaponName));
+
+        LogPlayerWeaponRestoreState(weapon, prefab);
 
         // Per-equip [PlayerController] / [WeaponFix] dump logs removed — they
         // fired on every weapon equip/re-equip (multiple times per level) and
@@ -5090,7 +5095,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (handBone == null)
             return null;
 
-        Transform socketParent = FindBoneExact(handBone.root, "bip_hand_R") ?? handBone;
+        Transform socketParent = handBone;
         Transform socket = handBone.Find(WeaponSocketName);
         if (socket == null)
             socket = socketParent.Find(WeaponSocketName);
@@ -5159,6 +5164,45 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             renderer.enabled = true;
             renderer.forceRenderingOff = false;
         }
+    }
+
+    private static void LogPlayerWeaponRestoreState(GameObject weapon, GameObject prefab)
+    {
+        int rendererCount = CountWeaponRenderers(weapon);
+        bool attached = weapon != null
+            && weapon.transform.parent != null
+            && rendererCount > 0
+            && HasNonZeroLocalScale(weapon.transform);
+
+        Debug.Log("[WeaponRestore] backup logic applied");
+        Debug.Log($"[WeaponRestore] player weapon attached={attached}");
+        Debug.Log($"[WeaponRestore] socket={(weapon != null && weapon.transform.parent != null ? weapon.transform.parent.name : "<none>")}");
+        Debug.Log($"[WeaponRestore] prefab={(prefab != null ? prefab.name : (weapon != null ? weapon.name : "<null>"))}");
+        Debug.Log($"[WeaponRestore] renderer count={rendererCount}");
+    }
+
+    private static int CountWeaponRenderers(GameObject weapon)
+    {
+        if (weapon == null) return 0;
+
+        int count = 0;
+        Renderer[] renderers = weapon.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer renderer = renderers[i];
+            if (renderer != null && renderer.enabled && !renderer.forceRenderingOff)
+                count++;
+        }
+        return count;
+    }
+
+    private static bool HasNonZeroLocalScale(Transform t)
+    {
+        if (t == null) return false;
+        Vector3 scale = t.localScale;
+        return !Mathf.Approximately(scale.x, 0f)
+            && !Mathf.Approximately(scale.y, 0f)
+            && !Mathf.Approximately(scale.z, 0f);
     }
 
     private static void ApplySickleHandPose(Transform handBone, Transform weaponRoot)
