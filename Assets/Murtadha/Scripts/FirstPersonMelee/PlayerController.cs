@@ -1738,7 +1738,6 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             if (l >= 0) mask |= 1 << l;
         }
         Add("Environment");
-        Add("Default");
         Add("Map");
         Add("LevelContent");
         Add("Building");
@@ -1916,14 +1915,17 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
         horizontalDelta.y = 0f;
         GetCapsuleWorldEndpoints(out Vector3 p0, out Vector3 p1);
-        float r = controller.radius;
+        float stepLift = Mathf.Max(controller.skinWidth, controller.stepOffset) + 0.02f;
+        p0 += Vector3.up * stepLift;
+        if (p0.y > p1.y) p0 = p1;
+        float r = controller.radius * 0.85f;
         float pad = Mathf.Max(controller.skinWidth, wallCollisionPadding) + minMoveClearance;
         float dist = horizontalDelta.magnitude;
         Vector3 dir = horizontalDelta / dist;
 
         if (!Physics.CapsuleCast(
                 p0, p1,
-                r * 0.98f,
+                r,
                 dir,
                 out RaycastHit hit,
                 dist + pad,
@@ -1957,7 +1959,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         Vector3 p1b = p1 + move1;
         if (!Physics.CapsuleCast(
                 p0b, p1b,
-                r * 0.98f,
+                r,
                 sdir,
                 out RaycastHit hit2,
                 slideDist + pad,

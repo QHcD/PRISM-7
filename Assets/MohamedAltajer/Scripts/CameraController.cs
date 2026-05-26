@@ -1,5 +1,6 @@
 using System.Collections;
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 [DefaultExecutionOrder(20000)]
 public class CameraController : MonoBehaviour
@@ -160,10 +161,12 @@ public class CameraController : MonoBehaviour
     public float autoAlignDelayAfterManualInput = 0.75f;
     public float autoAlignSmoothTime = 0.25f;
     public float autoAlignMoveDeadzone = 0.15f;
-    public float autoAlignManualMouseThreshold = 0.01f;
+    public float autoAlignManualMouseThreshold = 1.5f;
 
     private float _autoAlignYawVelocity;
     private float _lastManualCameraInputTime = -999f;
+    private Vector3 _autoAlignLastTargetPos;
+    private bool _autoAlignTargetPosInitialized;
 
     private void Awake()
     {
@@ -409,44 +412,62 @@ public class CameraController : MonoBehaviour
 
     private void ApplyAutoAlignYaw()
     {
-        if (!autoAlignEnabled || !useExternalYaw || target == null)
-            return;
-
-        float mouseDx = 0f, mouseDy = 0f;
-        try { mouseDx = Input.GetAxis("Mouse X"); } catch { }
-        try { mouseDy = Input.GetAxis("Mouse Y"); } catch { }
-        if (Mathf.Abs(mouseDx) > autoAlignManualMouseThreshold ||
-            Mathf.Abs(mouseDy) > autoAlignManualMouseThreshold)
+        if (!autoAlignEnabled || target == null)
         {
-            _lastManualCameraInputTime = Time.time;
-            _autoAlignYawVelocity = 0f;
+            _autoAlignTargetPosInitialized = false;
             return;
         }
 
-        float h = 0f, v = 0f;
-        try { h = Input.GetAxisRaw("Horizontal"); } catch { }
-        try { v = Input.GetAxisRaw("Vertical"); } catch { }
-        float moveMag = Mathf.Sqrt(h * h + v * v);
-        if (moveMag < autoAlignMoveDeadzone)
+        if (!useExternalYaw)
+            useExternalYaw = true;
+
+        Vector2 mouseDelta = Mouse.current != null ? Mouse.current.delta.ReadValue() : Vector2.zero;
+        Vector2 stickDelta = Gamepad.current != null ? Gamepad.current.rightStick.ReadValue() : Vector2.zero;
+        float mouseMag = mouseDelta.magnitude;
+        float stickMag = stickDelta.magnitude;
+        if (mouseMag > Mathf.Max(0.001f, autoAlignManualMouseThreshold) || stickMag > 0.18f)
+        {
+            _lastManualCameraInputTime = Time.time;
+            _autoAlignYawVelocity = 0f;
+            _autoAlignLastTargetPos = target.position;
+            _autoAlignTargetPosInitialized = true;
+            return;
+        }
+
+        PlayerController pcVel = target.GetComponentInParent<PlayerController>();
+        Vector3 targetPos = pcVel != null ? pcVel.transform.position : target.position;
+        if (!_autoAlignTargetPosInitialized)
+        {
+            _autoAlignLastTargetPos = targetPos;
+            _autoAlignTargetPosInitialized = true;
+            return;
+        }
+
+        float dt = Mathf.Max(0.0001f, Time.deltaTime);
+        Vector3 delta = targetPos - _autoAlignLastTargetPos;
+        _autoAlignLastTargetPos = targetPos;
+        delta.y = 0f;
+        float speed = delta.magnitude / dt;
+        if (speed < Mathf.Max(0.05f, autoAlignMoveDeadzone))
         {
             _autoAlignYawVelocity = 0f;
             return;
         }
 
         if (Time.time - _lastManualCameraInputTime < autoAlignDelayAfterManualInput)
-            return;
-
-        float forwardWeight = Mathf.Clamp01(v / Mathf.Max(0.0001f, moveMag));
-        if (forwardWeight <= 0.001f)
         {
             _autoAlignYawVelocity = 0f;
             return;
         }
 
-        float targetYaw = target.eulerAngles.y;
-        float smoothTime = Mathf.Max(0.001f, autoAlignSmoothTime / forwardWeight);
+        PlayerController pc = target.GetComponentInParent<PlayerController>();
+        float targetYaw = pc != null ? pc.transform.eulerAngles.y : target.eulerAngles.y;
         externalYaw = Mathf.SmoothDampAngle(
-            externalYaw, targetYaw, ref _autoAlignYawVelocity, smoothTime);
+            externalYaw, targetYaw, ref _autoAlignYawVelocity,
+            Mathf.Max(0.01f, autoAlignSmoothTime));
+
+        if (pc != null)
+            pc.SetOrbitYaw(externalYaw);
     }
 
     // ════════════════════════════════════════════════════════════════════════
