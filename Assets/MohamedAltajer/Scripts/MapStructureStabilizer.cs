@@ -163,7 +163,7 @@ public static class MapStructureStabilizer
 
         if (existing is BoxCollider && mf.sharedMesh.isReadable)
         {
-            Object.Destroy(existing);
+            DestroyObjectSafe(existing);
             existing = null;
             upgraded = true;
         }
@@ -195,6 +195,16 @@ public static class MapStructureStabilizer
         }
 
         return upgraded || added;
+    }
+
+    private static void DestroyObjectSafe(Object obj)
+    {
+        if (obj == null)
+            return;
+        if (Application.isPlaying)
+            Object.Destroy(obj);
+        else
+            Object.DestroyImmediate(obj);
     }
 
     private static bool IsEnclosedBuildingShell(GameObject go)

@@ -28,6 +28,7 @@ Material:
   - _NORMALMAP
   m_InvalidKeywords:
   - _ALPHABLEND_ON
+  - _DOUBLESIDED_ON
   m_LightmapFlags: 4
   m_EnableInstancingVariants: 0
   m_DoubleSidedGI: 1

@@ -376,7 +376,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         Transform existing = root.Find("MultiplayerOverlay");
         if (existing != null)
         {
-            Destroy(existing.gameObject);
+            DestroyUiObject(existing.gameObject);
             SetMainMenuElementsVisible(root, true);
             return;
         }
@@ -580,7 +580,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
             new Vector2(0.38f, 0.038f), new Vector2(0.62f, 0.108f),
             () =>
             {
-                Destroy(overlayObj);
+                DestroyUiObject(overlayObj);
                 SetMainMenuElementsVisible(root, true);
             }, 30f, false, true);
 
@@ -635,7 +635,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
     {
         // Replace any prior selector so re-opening doesn't stack overlays.
         Transform existing = parent.Find("MpLevelSelectOverlay");
-        if (existing != null) Destroy(existing.gameObject);
+        if (existing != null) DestroyUiObject(existing.gameObject);
 
         GameObject overlayObj = new GameObject("MpLevelSelectOverlay");
         overlayObj.transform.SetParent(parent, false);
@@ -646,7 +646,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         Button dimBtn = overlayObj.AddComponent<Button>();
         dimBtn.targetGraphic = dim;
         dimBtn.transition = Selectable.Transition.None;
-        dimBtn.onClick.AddListener(() => Destroy(overlayObj));
+        dimBtn.onClick.AddListener(() => DestroyUiObject(overlayObj));
 
         GameObject panel = new GameObject("MpLevelSelectPanel");
         panel.transform.SetParent(overlayObj.transform, false);
@@ -733,13 +733,13 @@ public class RuntimeMenuBuilder : MonoBehaviour
             {
                 MultiplayerRuntimeConfig.MultiplayerSelectedLevel = captured;
                 onSelected?.Invoke();
-                Destroy(overlayObj);
+                DestroyUiObject(overlayObj);
             });
         }
 
         Button closeBtn = MakePanelButton(panel.transform, "CLOSE",
             new Vector2(0.35f, 0.03f), new Vector2(0.65f, 0.12f),
-            () => Destroy(overlayObj), 26f, false, true);
+            () => DestroyUiObject(overlayObj), 26f, false, true);
     }
 
     Button MakeGameModeButton(Transform parent, string label, Vector2 anchorMin, Vector2 anchorMax, System.Action action, out Image bgImage, out Outline outline, out TextMeshProUGUI textComp)
@@ -1035,7 +1035,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         Transform existing = root.Find("LevelSelectOverlay");
         if (existing != null)
         {
-            Destroy(existing.gameObject);
+            DestroyUiObject(existing.gameObject);
             SetMainMenuElementsVisible(root, true);
             return;
         }
@@ -1113,7 +1113,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
             new Vector2(0.395f, 0.006f), new Vector2(0.605f, 0.085f),
             () =>
             {
-                Destroy(overlayObj);
+                DestroyUiObject(overlayObj);
                 SetMainMenuElementsVisible(root, true);
             }, 31f, false, true);
         if (returnBtn != null) tileSelectables.Add(returnBtn);
@@ -1137,7 +1137,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
     {
         if (root == null) return;
         Transform existing = root.Find(overlayName);
-        if (existing != null) Destroy(existing.gameObject);
+        if (existing != null) DestroyUiObject(existing.gameObject);
     }
 
     // ─── LEVEL TILE ─────────────────────────────────────────────────────────
@@ -1858,7 +1858,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
     {
         // Tear down any leftover stage from a previous menu reload.
         GameObject existing = GameObject.Find("CinematicStage");
-        if (existing != null) Destroy(existing);
+        if (existing != null) DestroyUiObject(existing);
 
         GameObject stage = new GameObject("CinematicStage");
 
@@ -1900,7 +1900,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         podium.transform.localPosition = new Vector3(0f, -0.14f, 0f);
         ApplyMatColor(podium, new Color(0.18f, 0.22f, 0.32f, 1f), 0.45f, 0.85f);
         Collider podiumCol = podium.GetComponent<Collider>();
-        if (podiumCol != null) Destroy(podiumCol);
+        if (podiumCol != null) DestroyUiObject(podiumCol);
 
         // Glowing inner ring on top of the podium.
         GameObject ring = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
@@ -1910,7 +1910,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         ring.transform.localPosition = new Vector3(0f, -0.06f, 0f);
         ApplyMatColor(ring, new Color(0.30f, 0.55f, 1f, 1f), 0.0f, 0.0f, emissive: true);
         Collider ringCol = ring.GetComponent<Collider>();
-        if (ringCol != null) Destroy(ringCol);
+        if (ringCol != null) DestroyUiObject(ringCol);
 
         // Procedural ronin silhouette + katana.
         BuildRoninSilhouette(stage.transform);
@@ -2005,7 +2005,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
             pillar.transform.localRotation = Quaternion.Euler(0f, -angle, 0f);
             ApplyMatColor(pillar, new Color(0.10f, 0.12f, 0.18f, 1f), 0.6f, 0.05f);
             Collider pc = pillar.GetComponent<Collider>();
-            if (pc != null) Destroy(pc);
+            if (pc != null) DestroyUiObject(pc);
         }
 
         // Camera orbit driver — rotates around the centre slowly.
@@ -2038,7 +2038,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         torso.transform.localPosition = new Vector3(0f, 0.95f, 0f);
         torso.transform.localScale    = new Vector3(0.55f, 0.85f, 0.32f);
         torso.GetComponent<MeshRenderer>().sharedMaterial = bodyMat;
-        Destroy(torso.GetComponent<Collider>());
+        DestroyUiObject(torso.GetComponent<Collider>());
 
         // Chest accent.
         GameObject chestTrim = GameObject.CreatePrimitive(PrimitiveType.Cube);
@@ -2046,7 +2046,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         chestTrim.transform.localPosition = new Vector3(0f, 1.25f, 0.165f);
         chestTrim.transform.localScale    = new Vector3(0.40f, 0.07f, 0.02f);
         chestTrim.GetComponent<MeshRenderer>().sharedMaterial = trimMat;
-        Destroy(chestTrim.GetComponent<Collider>());
+        DestroyUiObject(chestTrim.GetComponent<Collider>());
 
         // Head.
         GameObject head = GameObject.CreatePrimitive(PrimitiveType.Sphere);
@@ -2054,7 +2054,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         head.transform.localPosition = new Vector3(0f, 1.65f, 0f);
         head.transform.localScale    = new Vector3(0.30f, 0.30f, 0.30f);
         head.GetComponent<MeshRenderer>().sharedMaterial = bodyMat;
-        Destroy(head.GetComponent<Collider>());
+        DestroyUiObject(head.GetComponent<Collider>());
 
         // Visor / glow band.
         GameObject visor = GameObject.CreatePrimitive(PrimitiveType.Cube);
@@ -2062,7 +2062,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         visor.transform.localPosition = new Vector3(0f, 1.66f, 0.13f);
         visor.transform.localScale    = new Vector3(0.22f, 0.05f, 0.04f);
         visor.GetComponent<MeshRenderer>().sharedMaterial = trimMat;
-        Destroy(visor.GetComponent<Collider>());
+        DestroyUiObject(visor.GetComponent<Collider>());
 
         // Arms — left rests at side, right is forward (sword hand).
         GameObject leftArm = GameObject.CreatePrimitive(PrimitiveType.Cube);
@@ -2070,7 +2070,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         leftArm.transform.localPosition = new Vector3(-0.42f, 0.95f, 0f);
         leftArm.transform.localScale    = new Vector3(0.16f, 0.78f, 0.18f);
         leftArm.GetComponent<MeshRenderer>().sharedMaterial = bodyMat;
-        Destroy(leftArm.GetComponent<Collider>());
+        DestroyUiObject(leftArm.GetComponent<Collider>());
 
         GameObject rightArm = GameObject.CreatePrimitive(PrimitiveType.Cube);
         rightArm.transform.SetParent(root.transform, false);
@@ -2078,7 +2078,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         rightArm.transform.localRotation = Quaternion.Euler(60f, -10f, 0f);
         rightArm.transform.localScale    = new Vector3(0.16f, 0.78f, 0.18f);
         rightArm.GetComponent<MeshRenderer>().sharedMaterial = bodyMat;
-        Destroy(rightArm.GetComponent<Collider>());
+        DestroyUiObject(rightArm.GetComponent<Collider>());
 
         // Legs.
         GameObject leftLeg = GameObject.CreatePrimitive(PrimitiveType.Cube);
@@ -2086,14 +2086,14 @@ public class RuntimeMenuBuilder : MonoBehaviour
         leftLeg.transform.localPosition = new Vector3(-0.16f, 0.30f, 0f);
         leftLeg.transform.localScale    = new Vector3(0.20f, 0.60f, 0.22f);
         leftLeg.GetComponent<MeshRenderer>().sharedMaterial = bodyMat;
-        Destroy(leftLeg.GetComponent<Collider>());
+        DestroyUiObject(leftLeg.GetComponent<Collider>());
 
         GameObject rightLeg = GameObject.CreatePrimitive(PrimitiveType.Cube);
         rightLeg.transform.SetParent(root.transform, false);
         rightLeg.transform.localPosition = new Vector3(0.16f, 0.30f, 0f);
         rightLeg.transform.localScale    = new Vector3(0.20f, 0.60f, 0.22f);
         rightLeg.GetComponent<MeshRenderer>().sharedMaterial = bodyMat;
-        Destroy(rightLeg.GetComponent<Collider>());
+        DestroyUiObject(rightLeg.GetComponent<Collider>());
 
         // Katana — held in the right hand, angled forward.
         GameObject katana = new GameObject("Katana");
@@ -2106,21 +2106,21 @@ public class RuntimeMenuBuilder : MonoBehaviour
         blade.transform.localPosition = new Vector3(0f, 0.55f, 0f);
         blade.transform.localScale    = new Vector3(0.045f, 1.10f, 0.012f);
         blade.GetComponent<MeshRenderer>().sharedMaterial = bladeMat;
-        Destroy(blade.GetComponent<Collider>());
+        DestroyUiObject(blade.GetComponent<Collider>());
 
         GameObject guard = GameObject.CreatePrimitive(PrimitiveType.Cube);
         guard.transform.SetParent(katana.transform, false);
         guard.transform.localPosition = new Vector3(0f, 0f, 0f);
         guard.transform.localScale    = new Vector3(0.16f, 0.04f, 0.08f);
         guard.GetComponent<MeshRenderer>().sharedMaterial = trimMat;
-        Destroy(guard.GetComponent<Collider>());
+        DestroyUiObject(guard.GetComponent<Collider>());
 
         GameObject hilt = GameObject.CreatePrimitive(PrimitiveType.Cube);
         hilt.transform.SetParent(katana.transform, false);
         hilt.transform.localPosition = new Vector3(0f, -0.18f, 0f);
         hilt.transform.localScale    = new Vector3(0.05f, 0.32f, 0.05f);
         hilt.GetComponent<MeshRenderer>().sharedMaterial = hiltMat;
-        Destroy(hilt.GetComponent<Collider>());
+        DestroyUiObject(hilt.GetComponent<Collider>());
     }
 
     /// <summary>Apply a fresh material with the given tint to a primitive.</summary>
@@ -2172,7 +2172,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         Transform existing = root.Find("CustomMatchOverlay");
         if (existing != null)
         {
-            Destroy(existing.gameObject);
+            DestroyUiObject(existing.gameObject);
             SetMainMenuElementsVisible(root, true);
             return;
         }
@@ -2304,7 +2304,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
             new Vector2(0.62f, 0.07f), new Vector2(0.78f, 0.14f),
             () =>
             {
-                Destroy(overlayObj);
+                DestroyUiObject(overlayObj);
                 SetMainMenuElementsVisible(root, true);
             }, 26f, true, true);
 
@@ -2430,7 +2430,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
                     return;
                 }
                 PlayerProfile.SetUsername(sanitized);
-                Destroy(overlayObj);
+                DestroyUiObject(overlayObj);
                 // Refresh the main menu so the profile header re-reads the
                 // newly stored username.
                 ClearAndRebuildMainMenu(root);
@@ -2439,7 +2439,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
             new Vector2(0.54f, 0.06f), new Vector2(0.82f, 0.18f),
             () =>
             {
-                Destroy(overlayObj);
+                DestroyUiObject(overlayObj);
                 SetMainMenuElementsVisible(root, true);
             });
 
@@ -2573,7 +2573,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
                     return;
                 }
                 PlayerProfile.SetUsername(sanitized);
-                Destroy(overlayObj);
+                DestroyUiObject(overlayObj);
                 ClearAndRebuildMainMenu(root);
             });
 
@@ -2582,7 +2582,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
             new Color(1f, 0.25f, 0.95f, 1f), new Color(0.20f, 0.02f, 0.26f, 0.86f),
             () =>
             {
-                Destroy(overlayObj);
+                DestroyUiObject(overlayObj);
                 SetMainMenuElementsVisible(root, true);
             });
 
@@ -2764,7 +2764,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         {
             Transform child = root.GetChild(i);
             if (child.name == "Background" || child.name == "Overlay") continue;
-            Destroy(child.gameObject);
+            DestroyUiObject(child.gameObject);
         }
         BuildMainMenu(root);
     }
@@ -2791,7 +2791,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         Transform existing = root.Find("StoreOverlay");
         if (existing != null)
         {
-            Destroy(existing.gameObject);
+            DestroyUiObject(existing.gameObject);
             SetMainMenuElementsVisible(root, true);
             return;
         }
@@ -2868,7 +2868,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
             new Color(0.12f, 0.20f, 0.42f, 0.92f), PrismOrganizedMenuChrome.ButtonOutlineBlue,
             () =>
             {
-                Destroy(overlayObj);
+                DestroyUiObject(overlayObj);
                 SetMainMenuElementsVisible(root, true);
                 ClearAndRebuildMainMenu(root);
             }, customFont);
@@ -2906,7 +2906,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         {
             Transform child = panel.GetChild(i);
             if (child.name.StartsWith("StoreContent_"))
-                Destroy(child.gameObject);
+                DestroyUiObject(child.gameObject);
         }
 
         Transform hdr = panel.Find("StoreSectionHeader");
@@ -3561,7 +3561,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         Transform existing = root.Find("ChallengesOverlay");
         if (existing != null)
         {
-            Destroy(existing.gameObject);
+            DestroyUiObject(existing.gameObject);
             SetMainMenuElementsVisible(root, true);
             return;
         }
@@ -3704,7 +3704,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
             new Color(0.12f, 0.20f, 0.42f, 0.92f), PrismOrganizedMenuChrome.ButtonOutlineBlue,
             () =>
             {
-                Destroy(overlayObj);
+                DestroyUiObject(overlayObj);
                 SetMainMenuElementsVisible(root, true);
                 ClearAndRebuildMainMenu(root);
             }, customFont);

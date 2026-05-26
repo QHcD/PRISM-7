@@ -1453,6 +1453,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         float moveK = 1f - Mathf.Exp(-InputSmoothing * moveDt);
         moveInputSmoothed = Vector2.Lerp(moveInputSmoothed, moveInputRaw, moveK);
 
+        if (moveInputRaw.sqrMagnitude < 0.0001f)
+            moveInputSmoothed = Vector2.zero;
+
         // Exponential smoothing only ASYMPTOTES toward zero — it never reaches
         // it. Without this hard snap the tiny residual keeps feeding a non-zero
         // move vector after every key release, so the character glides on
@@ -1554,8 +1557,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     /// </summary>
     private Vector2 ReadMovementInput()
     {
-        // ── Keyboard (always wins) ────────────────────────────────────────────
-        Vector2 keyboard = BuildNormalizedKeyboardMoveInput(ResolveControlStyleState());
+        Vector2 keyboard = BuildNormalizedKeyboardMoveInput();
         _dbgKeyboard = keyboard;
 
         // ── Gamepad ───────────────────────────────────────────────────────────
@@ -1589,37 +1591,16 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         return gamepadOut;
     }
 
-    private static GameManager.ControlStyleState ResolveControlStyleState()
-    {
-        if (GameManager.Instance != null)
-            return GameManager.Instance.GetControlStyleState();
-
-        return GameManager.LoadControlStyleState();
-    }
-
-    private static Vector2 BuildNormalizedKeyboardMoveInput(GameManager.ControlStyleState state)
+    private static Vector2 BuildNormalizedKeyboardMoveInput()
     {
         if (Keyboard.current == null) return Vector2.zero;
 
         Keyboard k = Keyboard.current;
         Vector2 m = Vector2.zero;
-
-        switch (state)
-        {
-            case GameManager.ControlStyleState.ArrowsMouse:
-                if (k.upArrowKey.isPressed) m.y += 1f;
-                if (k.downArrowKey.isPressed) m.y -= 1f;
-                if (k.leftArrowKey.isPressed) m.x -= 1f;
-                if (k.rightArrowKey.isPressed) m.x += 1f;
-                break;
-            case GameManager.ControlStyleState.WasdMouse:
-            default:
-                if (k.wKey.isPressed) m.y += 1f;
-                if (k.sKey.isPressed) m.y -= 1f;
-                if (k.aKey.isPressed) m.x -= 1f;
-                if (k.dKey.isPressed) m.x += 1f;
-                break;
-        }
+        if (k.wKey.isPressed || k.upArrowKey.isPressed) m.y += 1f;
+        if (k.sKey.isPressed || k.downArrowKey.isPressed) m.y -= 1f;
+        if (k.aKey.isPressed || k.leftArrowKey.isPressed) m.x -= 1f;
+        if (k.dKey.isPressed || k.rightArrowKey.isPressed) m.x += 1f;
 
         return Vector2.ClampMagnitude(m, 1f);
     }
@@ -2016,6 +1997,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (!isFlipping)
         {
             Vector3 moveDirection = GetCameraRelativeMoveDirection(moveInputSmoothed);
+            if (moveInputRaw.sqrMagnitude < 0.0001f && !isSliding)
+                horizontalVelocity = Vector3.zero;
             Vector3 targetVelocity = moveDirection * targetSpeed;
 
             float rate = moveInputSmoothed.sqrMagnitude > 0.01f ? acceleration : deceleration;
@@ -2132,20 +2115,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (input.sqrMagnitude < 0.0001f)
             return Vector3.zero;
 
-        Vector3 forward;
-        Vector3 right;
-        if (isThirdPersonActive && ThirdPersonOrbitCamera.Instance != null)
-        {
-            forward = ThirdPersonOrbitCamera.GetMovementForward();
-            right = ThirdPersonOrbitCamera.GetMovementRight();
-        }
-        else
-        {
-            Quaternion yawOnlyBasis = Quaternion.Euler(0f, cameraYaw, 0f);
-            forward = yawOnlyBasis * Vector3.forward;
-            right = yawOnlyBasis * Vector3.right;
-        }
-
+        GetCameraYawBasis(out Vector3 forward, out Vector3 right);
         Vector3 moveDirection = (right * input.x) + (forward * input.y);
         moveDirection.y = 0f;
         return moveDirection.sqrMagnitude > 1f
@@ -2153,24 +2123,33 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             : moveDirection;
     }
 
-    /// <summary>
-    /// Body yaw target. Backward input (S / down arrow) still moves the character
-    /// backward but keeps facing camera-forward so the model does not spin 180°.
-    /// </summary>
     private Vector3 GetCameraRelativeFacingDirection(Vector2 input)
     {
         input = Vector2.ClampMagnitude(input, 1f);
         if (input.sqrMagnitude < 0.0001f)
             return Vector3.zero;
 
-        Vector2 facingInput = input;
-        if (facingInput.y < -0.01f)
-            facingInput.y = 0f;
+        return GetCameraRelativeMoveDirection(input);
+    }
 
-        if (facingInput.sqrMagnitude < 0.0001f)
-            facingInput = Vector2.up;
+    private void GetCameraYawBasis(out Vector3 forward, out Vector3 right)
+    {
+        Camera cam = ActiveCamera != null ? ActiveCamera : GetGameplayCamera();
+        if (cam != null)
+        {
+            forward = Vector3.ProjectOnPlane(cam.transform.forward, Vector3.up);
+            right = Vector3.ProjectOnPlane(cam.transform.right, Vector3.up);
+            if (forward.sqrMagnitude > 0.0001f && right.sqrMagnitude > 0.0001f)
+            {
+                forward.Normalize();
+                right.Normalize();
+                return;
+            }
+        }
 
-        return GetCameraRelativeMoveDirection(facingInput);
+        Quaternion yawOnlyBasis = Quaternion.Euler(0f, cameraYaw, 0f);
+        forward = yawOnlyBasis * Vector3.forward;
+        right = yawOnlyBasis * Vector3.right;
     }
 
     private void DebugMovementInput(Vector3 moveDirection)
@@ -2180,11 +2159,10 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
         float bodyYaw = thirdPersonBody != null ? thirdPersonBody.transform.eulerAngles.y : -1f;
         nextMovementInputDebugLogTime = Time.time + 0.35f;
-        Debug.Log($"[PlayerController] keyPressed={GetMovementDebugKeyPressed()}, " +
-                  $"rawInput=({moveInputRaw.x:0.###},{moveInputRaw.y:0.###}), " +
-                  $"finalMoveInput=({moveInputSmoothed.x:0.###},{moveInputSmoothed.y:0.###}), " +
-                  $"finalMoveDirection=({moveDirection.x:0.###},{moveDirection.z:0.###}), " +
-                  $"rootYaw={transform.eulerAngles.y:0.###}, bodyYaw={bodyYaw:0.###}");
+        Vector3 facing = GetCameraRelativeFacingDirection(moveInputRaw);
+        Debug.Log($"[MoveFix] key={GetMovementDebugKeyPressed()} input=({moveInputRaw.x:0.###},{moveInputRaw.y:0.###}) " +
+                  $"moveWorld=({moveDirection.x:0.###},{moveDirection.z:0.###}) " +
+                  $"facing=({facing.x:0.###},{facing.z:0.###}) rootYaw={transform.eulerAngles.y:0.###} bodyYaw={bodyYaw:0.###}");
     }
 
     private Vector3 GetActualHorizontalVelocity()
@@ -4267,6 +4245,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     private void ApplyPlayerBodyBlackTint()
     {
         if (thirdPersonBody == null) return;
+        if (!Application.isPlaying) return;
 
         Renderer[] renderers = thirdPersonBody.GetComponentsInChildren<Renderer>(true);
         for (int i = 0; i < renderers.Length; i++)
@@ -5766,7 +5745,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         meshObj.transform.localPosition = Vector3.zero;
         meshObj.transform.localScale    = new Vector3(0.05f, 0.3f, 0.05f);
 
-        Destroy(meshObj.GetComponent<Collider>());
+        DestroyObjectSafe(meshObj.GetComponent<Collider>());
 
         MeleeWeaponWallPullback wallPullPm = root.GetComponent<MeleeWeaponWallPullback>();
         if (wallPullPm == null) wallPullPm = root.AddComponent<MeleeWeaponWallPullback>();
@@ -5779,11 +5758,21 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     {
         if (equippedWeaponObject != null)
         {
-            Destroy(equippedWeaponObject);
+            DestroyObjectSafe(equippedWeaponObject);
             equippedWeaponObject = null;
         }
         equippedWeaponLevel = -1;
         weaponAttachInProgress = false;
         EquipWeaponForLevel(level);
+    }
+
+    private static void DestroyObjectSafe(Object obj)
+    {
+        if (obj == null)
+            return;
+        if (Application.isPlaying)
+            Destroy(obj);
+        else
+            DestroyImmediate(obj);
     }
 }

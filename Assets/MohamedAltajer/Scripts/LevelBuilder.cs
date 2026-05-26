@@ -3260,7 +3260,7 @@ public class LevelBuilder : MonoBehaviour
         {
             if (weapon != null)
             {
-                Object.Destroy(weapon);
+                DestroyObjectSafe(weapon);
                 controller.equippedWeaponObject = null;
             }
             controller.AttachWeaponToHand(weaponPrefab, targetSize, level);
