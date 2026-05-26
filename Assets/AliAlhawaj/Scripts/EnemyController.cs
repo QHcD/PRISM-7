@@ -39,7 +39,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     private const string PrefKeySawEuler = "Grip.Player.L12.Saw.Euler";
     // ── Tuning ──────────────────────────────────────────────────────────────
     [Header("Combat")]
-    public float detectionRadius  = 12f;
+    public float detectionRadius  = 30f;
     public float attackRadius     = 2f;
     [Tooltip("Hard distance gate applied at the moment of impact (after windup). " +
              "A hit is cancelled if the attacker root is farther than this from the target. " +
@@ -262,6 +262,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     private float _lastRecoveryWarpTime = -999f;
     private Vector3 _lastValidNavPosition;
     private bool _hasLastValidNavPosition;
+    private float _staticClipSinceTime = -1f;
     private float _navValidateTimer;
     private Vector3 _watchdogLastPosition;
     private float _aiBuildLogTimer;
@@ -579,8 +580,8 @@ public class EnemyController : MonoBehaviour, IDamageable
         voice.ApplyInspectorClips(hurtSounds, deathSounds, hitSound, deathSound);
 
         detectionInterval = Mathf.Clamp(detectionInterval, 0.05f, 2.0f);
-        detectionRadius = Mathf.Clamp(detectionRadius, 4f, 500f);
-        aggressiveScanRadius = Mathf.Max(aggressiveScanRadius, Mathf.Max(detectionRadius * 2f, 24f));
+        detectionRadius = Mathf.Clamp(detectionRadius, 20f, 500f);
+        aggressiveScanRadius = Mathf.Max(aggressiveScanRadius, Mathf.Max(detectionRadius * 2f, 60f));
         attackCooldown = Mathf.Min(attackCooldown, 0.65f);
         // Keep a real commitment window: too short (the old 0.15s cap) and the
         // AI re-snaps to whoever is marginally nearest every scan, which makes
@@ -1670,20 +1671,40 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_agent == null || !_agent.enabled || !_agent.isOnNavMesh)
             return;
 
-        float radius = Mathf.Max(0.3f, _agent.radius);
-        float height = Mathf.Max(1.6f, _agent.height);
-        if (!EnemySpawnGeometry.IsCapsuleInsideStaticGeometry(transform.position, radius, height))
+        float radius = Mathf.Max(0.3f, _agent.radius) * 0.6f;
+        float height = Mathf.Max(1.6f, _agent.height) * 0.8f;
+        bool clipping = EnemySpawnGeometry.IsCapsuleInsideStaticGeometry(transform.position, radius, height);
+        float agentSpeed = _agent.velocity.sqrMagnitude;
+
+        if (!clipping)
         {
-            if (_hasLastValidNavPosition)
-            {
-                _agent.Warp(_lastValidNavPosition);
-                _agent.ResetPath();
-            }
+            _staticClipSinceTime = -1f;
+            _lastValidNavPosition = transform.position;
+            _hasLastValidNavPosition = true;
             return;
         }
 
-        _lastValidNavPosition = transform.position;
-        _hasLastValidNavPosition = true;
+        if (agentSpeed > 0.04f)
+        {
+            _staticClipSinceTime = -1f;
+            return;
+        }
+
+        if (_staticClipSinceTime < 0f)
+        {
+            _staticClipSinceTime = Time.time;
+            return;
+        }
+
+        if (Time.time - _staticClipSinceTime < 1.2f)
+            return;
+
+        _staticClipSinceTime = -1f;
+        if (_hasLastValidNavPosition && (_lastValidNavPosition - transform.position).sqrMagnitude > 0.05f)
+        {
+            _agent.Warp(_lastValidNavPosition);
+            _agent.ResetPath();
+        }
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -3662,9 +3683,8 @@ public class EnemyController : MonoBehaviour, IDamageable
             }
         }
 
-        Transform candidate = AISensing.FindClosestHostile(this, detectionRadius);
-        if (candidate == null)
-            candidate = AISensing.FindClosestHostile(this, Mathf.Max(detectionRadius, aggressiveScanRadius));
+        float effectiveScanRadius = Mathf.Max(detectionRadius, aggressiveScanRadius);
+        Transform candidate = AISensing.FindClosestHostile(this, effectiveScanRadius);
         if (candidate == null)
             candidate = FindFallbackTarget();
 
