@@ -87,7 +87,20 @@ public class EnemyClipGuard : MonoBehaviour
     {
         Vector3 pos = transform.position;
         if (!NavMesh.SamplePosition(pos, out NavMeshHit hit, clampSampleRadius, NavMesh.AllAreas))
+        {
+            // Knockback or wall penetration pushed the enemy further off the
+            // NavMesh than the tight 0.8 m clamp can find. Widen the search
+            // (4 m → 12 m) and warp the agent back so it never gets stranded
+            // behind a wall or in void space.
+            if (!NavMesh.SamplePosition(pos, out hit, 4f, NavMesh.AllAreas) &&
+                !NavMesh.SamplePosition(pos, out hit, 12f, NavMesh.AllAreas))
+                return;
+
+            Vector3 recover = new Vector3(hit.position.x, pos.y, hit.position.z);
+            if (_agent != null && _agent.isOnNavMesh) _agent.Warp(recover);
+            else                                       transform.position = recover;
             return;
+        }
 
         Vector3 clamped = hit.position;
 

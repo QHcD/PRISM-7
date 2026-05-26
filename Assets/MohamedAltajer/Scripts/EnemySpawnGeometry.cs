@@ -23,10 +23,21 @@ public static class EnemySpawnGeometry
     private const float EnclosureWallRayCount = 12;
     private const float MinBuildingSpawnClearance = 6f;
 
+    // Default capsule used by spawn-clearance checks. Matches the runtime
+    // CharacterController dimensions used by the player and enemies (radius
+    // 0.45 m, height 1.8 m) so what the validator accepts is exactly what
+    // the live capsule can stand inside.
+    private const float SpawnCapsuleRadius = 0.45f;
+    private const float SpawnCapsuleHeight = 1.8f;
+
     private static int _spawnPhysicsMask = -1;
     private static int _staticGeometryMask = -1;
     private static readonly System.Collections.Generic.List<Vector3> StreetSpawnAnchors =
         new System.Collections.Generic.List<Vector3>(256);
+    // Pre-allocated buffer for Physics.OverlapCapsuleNonAlloc.  Sized to fit
+    // any plausible cluster of static colliders around one spawn candidate;
+    // overflow simply means we treat the candidate as occupied (reject).
+    private static readonly Collider[] _capsuleOverlapBuffer = new Collider[16];
 
     public static int StreetSpawnAnchorCount => StreetSpawnAnchors.Count;
 
@@ -59,12 +70,20 @@ public static class EnemySpawnGeometry
                     mask |= 1 << layer;
             }
 
+            // Layers below cover every wall/building/obstacle naming convention
+            // that has shipped in PRISM-7's scenes. Names that do not resolve
+            // are silently skipped — the existing layer-aware filters
+            // (LooksLikeBuildingStructureName) carry the load by mesh name.
+            Add("Default");
             Add("Environment");
             Add("Building");
+            Add("Buildings");
+            Add("Map");
             Add("StaticObstacle");
             Add("Wall");
+            Add("Walls");
+            Add("Obstacle");
             Add("Door");
-            Add("Default");
 
             if (mask == 0)
                 mask = Physics.DefaultRaycastLayers;
@@ -97,6 +116,13 @@ public static class EnemySpawnGeometry
             return false;
 
         if (!TryAlignFeetToGround(candidate, out Vector3 feet))
+            return false;
+
+        // Full-capsule overlap check against solid static geometry.
+        // Catches "buried in a wall" candidates that the sphere-only
+        // chest probe and 8-direction wall rays can miss (corners,
+        // narrow alcoves, stair undersides, container interiors).
+        if (!IsCapsuleClearOfStaticGeometry(feet))
             return false;
 
         if (!HasSpawnGroundAndClearance(feet, RequiredHeadroom))
@@ -638,6 +664,59 @@ public static class EnemySpawnGeometry
         Vector3 top = worldPosition + Vector3.up * (height - radius);
         return Physics.CheckCapsule(bottom, top, radius * 0.92f, StaticGeometryMask, QueryTriggerInteraction.Ignore);
     }
+
+    /// <summary>
+    /// Non-alloc capsule overlap check against solid static geometry. Returns
+    /// true when the spawn capsule has full clearance (no walls, props,
+    /// stairs, doors, rails). Used to reject spawns that would place a
+    /// character behind / inside a wall partition.
+    ///
+    /// <paramref name="feet"/> is the world-space ground point (capsule
+    /// bottom). The check inflates slightly along Y (skin allowance) so
+    /// micro-contact with the floor mesh never produces a false rejection.
+    /// </summary>
+    public static bool IsCapsuleClearOfStaticGeometry(Vector3 feet, float radius, float height)
+    {
+        radius = Mathf.Max(0.05f, radius);
+        height = Mathf.Max(radius * 2f + 0.01f, height);
+
+        const float skin = 0.05f;
+        Vector3 bottom = feet + Vector3.up * (radius + skin);
+        Vector3 top    = feet + Vector3.up * (height - radius - skin);
+        // Slightly under-size the probe radius so brushing-against-a-wall
+        // candidates (NavMesh-edge spawns) survive; we want to reject only
+        // candidates that are actually buried inside the geometry.
+        float probeRadius = radius * 0.9f;
+
+        int mask = StaticGeometryMask;
+        int count = Physics.OverlapCapsuleNonAlloc(
+            bottom, top, probeRadius, _capsuleOverlapBuffer, mask, QueryTriggerInteraction.Ignore);
+
+        if (count == 0) return true;
+
+        // Treat trigger/disabled/character colliders as non-blocking. This
+        // path is rare because StaticGeometryMask already excludes character
+        // layers, but a renderer parented under an Environment-layered prop
+        // can still surface a child collider on a different layer.
+        for (int i = 0; i < count; i++)
+        {
+            Collider c = _capsuleOverlapBuffer[i];
+            if (c == null) continue;
+            if (!c.enabled) continue;
+            if (c.isTrigger) continue;
+            if (c.GetComponentInParent<NavMeshAgent>() != null) continue;
+            if (c.GetComponentInParent<CharacterController>() != null) continue;
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Convenience overload using the project's standard character capsule.
+    /// </summary>
+    public static bool IsCapsuleClearOfStaticGeometry(Vector3 feet)
+        => IsCapsuleClearOfStaticGeometry(feet, SpawnCapsuleRadius, SpawnCapsuleHeight);
 
     private static bool HasSpawnGroundAndClearance(Vector3 candidate, float requiredHeight)
     {

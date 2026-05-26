@@ -1724,6 +1724,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             int l = LayerMask.NameToLayer(layerName);
             if (l >= 0) mask |= 1 << l;
         }
+        Add("Default");
         Add("Environment");
         Add("Map");
         Add("LevelContent");
@@ -1731,6 +1732,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         Add("Buildings");
         Add("Wall");
         Add("Walls");
+        Add("Obstacle");
         Add("StaticObstacle");
         return mask == 0 ? (LayerMask)0 : (LayerMask)mask;
     }
@@ -3672,9 +3674,13 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             moveY = Mathf.Clamp(localVel.z / maxReferenceSpeed, -1f, 1f);
         }
 
-        bool droveSpeedParameter = AnimSetFloat(anim, "Speed", normalizedSpeed, 0.1f);
-        AnimSetFloat(anim, "MoveX", moveX, 0.1f);
-        AnimSetFloat(anim, "MoveY", moveY, 0.1f);
+        // Damping is in seconds. Speed is the master gate (idle ↔ moving) so
+        // it stays snappy at 0.08s. MoveX/MoveY drive the 2D blend tree axes
+        // and benefit from a touch more smoothing (0.12s) so direction flips
+        // during turn-in don't visually pop between strafe and forward poses.
+        bool droveSpeedParameter = AnimSetFloat(anim, "Speed", normalizedSpeed, 0.08f);
+        AnimSetFloat(anim, "MoveX", moveX, 0.12f);
+        AnimSetFloat(anim, "MoveY", moveY, 0.12f);
 
         if (!droveSpeedParameter)
             ForceLocomotionState(anim, normalizedSpeed);
