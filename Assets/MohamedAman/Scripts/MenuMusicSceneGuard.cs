@@ -185,7 +185,6 @@ public static class MenuMusicSceneGuard
             AddFileIfPresent(Path.Combine(folder, ThemeName + ".ogg"), AudioType.OGGVORBIS);
             AddFileIfPresent(Path.Combine(folder, ThemeName + ".wav"), AudioType.WAV);
             AddFileIfPresent(Path.Combine(folder, ThemeName + ".mp3"), AudioType.MPEG);
-            AddFileIfPresent(Path.Combine(folder, ThemeName + ".mp4"), AudioType.MPEG);
         }
 
         AddFolder(Path.Combine(Application.dataPath, "MohamedAman", "Resources"));

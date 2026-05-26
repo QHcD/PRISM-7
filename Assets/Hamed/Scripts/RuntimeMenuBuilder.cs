@@ -223,17 +223,22 @@ public class RuntimeMenuBuilder : MonoBehaviour
         GameObject canvasObj = new GameObject("NeonCanvas");
         Canvas canvas = canvasObj.AddComponent<Canvas>();
         canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        canvas.overrideSorting = true;
+        canvas.sortingOrder = isMainMenu ? 1000 : 30000;
 
         CanvasScaler scaler = canvasObj.AddComponent<CanvasScaler>();
         scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
         scaler.referenceResolution = new Vector2(1920, 1080);
         scaler.matchWidthOrHeight = 0.5f;
-        canvasObj.AddComponent<GraphicRaycaster>();
+        GraphicRaycaster raycaster = canvasObj.AddComponent<GraphicRaycaster>();
+        raycaster.ignoreReversedGraphics = true;
+        raycaster.blockingObjects = GraphicRaycaster.BlockingObjects.None;
 
         Image bg = new GameObject("Background").AddComponent<Image>();
         bg.transform.SetParent(canvasObj.transform, false);
         Stretch(bg.GetComponent<RectTransform>());
         bg.color = new Color(0.03f, 0.04f, 0.08f, 1f);
+        bg.raycastTarget = false;
         Sprite resolvedBackground = ResolveMainMenuBackground();
         if (resolvedBackground != null)
         {
@@ -251,6 +256,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         Image overlay = new GameObject("Overlay").AddComponent<Image>();
         overlay.transform.SetParent(canvasObj.transform, false);
         Stretch(overlay.GetComponent<RectTransform>());
+        overlay.raycastTarget = false;
         // Neutral dark scrim (no blue tint) so the landscape background reads clearly.
         overlay.color = isMainMenu
             ? new Color(0f, 0f, 0f, 0.26f)
@@ -957,12 +963,19 @@ public class RuntimeMenuBuilder : MonoBehaviour
         MakeText(root, subtitle, subSize, new Color(0.94f, 0.94f, 1f, 1f), subMin, subMax);
 
         // Primary action button (NEXT LEVEL / RETRY / PLAY AGAIN) — large, bright
-        MakeActiveButton(root, primaryButton, new Vector2(0.32f, 0.24f), new Vector2(0.68f, 0.33f),
+        Button primaryResultButton = MakeActiveButton(root, primaryButton, new Vector2(0.32f, 0.24f), new Vector2(0.68f, 0.33f),
             primaryAction, new Color(0.60f, 0.22f, 0.88f, 1f), Color.white);
 
         // MAIN MENU button — slightly smaller, secondary style
-        MakeActiveButton(root, "MAIN MENU", new Vector2(0.35f, 0.11f), new Vector2(0.65f, 0.20f),
+        Button mainMenuResultButton = MakeActiveButton(root, "MAIN MENU", new Vector2(0.35f, 0.11f), new Vector2(0.65f, 0.20f),
             GoToMainMenuSafe, new Color(0.18f, 0.18f, 0.28f, 1f), new Color(0.88f, 0.88f, 1f, 1f));
+
+        var resultNav = new System.Collections.Generic.List<Selectable>(2);
+        if (primaryResultButton != null) resultNav.Add(primaryResultButton);
+        if (mainMenuResultButton != null) resultNav.Add(mainMenuResultButton);
+        MenuNavigationManager.AttachLinear(root.gameObject, resultNav);
+        if (primaryResultButton != null && EventSystem.current != null)
+            EventSystem.current.SetSelectedGameObject(primaryResultButton.gameObject);
 
         if (celebrate)
         {
@@ -987,7 +1000,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
     }
 
     // A clearly active, prominent button with solid background
-    void MakeActiveButton(Transform parent, string label,
+    Button MakeActiveButton(Transform parent, string label,
         Vector2 anchorMin, Vector2 anchorMax,
         UnityEngine.Events.UnityAction action,
         Color bgColor, Color textColor)
@@ -997,16 +1010,14 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
         Image img = obj.AddComponent<Image>();
         img.color = bgColor;
+        img.raycastTarget = true;
 
         Button btn = obj.AddComponent<Button>();
         btn.targetGraphic = img;
         btn.interactable = true;
-        btn.onClick.AddListener(action);
-
-        // Ensure button is unblocked
-        btn.onClick.AddListener(action); // double-register is harmless but let's remove dupe
         btn.onClick.RemoveAllListeners();
-        btn.onClick.AddListener(action);
+        if (action != null)
+            btn.onClick.AddListener(action);
 
         RectTransform rect = obj.GetComponent<RectTransform>();
         float cx = (anchorMin.x + anchorMax.x) * 0.5f;
@@ -1028,6 +1039,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
         AttachHoverEffect(obj, lbl, img, bgColor,
             new Color(Mathf.Min(1f, bgColor.r + 0.18f), Mathf.Min(1f, bgColor.g + 0.08f), Mathf.Min(1f, bgColor.b + 0.18f), 1f),
             textColor);
+        return btn;
     }
 
     void ToggleLevelSelect(Transform root)
@@ -1691,7 +1703,6 @@ public class RuntimeMenuBuilder : MonoBehaviour
             AddFileIfPresent(Path.Combine(folder, "MainMenu_LobbyTheme.ogg"), AudioType.OGGVORBIS);
             AddFileIfPresent(Path.Combine(folder, "MainMenu_LobbyTheme.wav"), AudioType.WAV);
             AddFileIfPresent(Path.Combine(folder, "MainMenu_LobbyTheme.mp3"), AudioType.MPEG);
-            AddFileIfPresent(Path.Combine(folder, "MainMenu_LobbyTheme.mp4"), AudioType.MPEG);
         }
 
         AddVariantsInFolder(Path.Combine(Application.dataPath, "Audio"));
@@ -1707,7 +1718,6 @@ public class RuntimeMenuBuilder : MonoBehaviour
         list.Add(new LobbyLoadCandidate { Url = $"{streamingRoot}/MainMenu_LobbyTheme.ogg", Type = AudioType.OGGVORBIS });
         list.Add(new LobbyLoadCandidate { Url = $"{streamingRoot}/MainMenu_LobbyTheme.wav", Type = AudioType.WAV });
         list.Add(new LobbyLoadCandidate { Url = $"{streamingRoot}/MainMenu_LobbyTheme.mp3", Type = AudioType.MPEG });
-        list.Add(new LobbyLoadCandidate { Url = $"{streamingRoot}/MainMenu_LobbyTheme.mp4", Type = AudioType.MPEG });
     }
 #endif
 
