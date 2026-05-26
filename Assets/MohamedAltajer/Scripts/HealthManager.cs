@@ -4,9 +4,24 @@ using UnityEngine.SceneManagement;
 public class HealthManager : MonoBehaviour
 {
     private const string MainMenuSceneName = "MainMenu";
+    private const float StartupProtectionMaxSeconds = 8f;
     private static HealthManager _instance;
+    private static bool _countdownIsActive;
+    private static float _startupProtectionStartedAt = -1f;
 
-    public static bool CountdownIsActive { get; private set; }
+    public static bool CountdownIsActive
+    {
+        get
+        {
+            ExpireStaleStartupProtection();
+            return _countdownIsActive;
+        }
+        private set
+        {
+            _countdownIsActive = value;
+            _startupProtectionStartedAt = value ? Time.realtimeSinceStartup : -1f;
+        }
+    }
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
     private static void Bootstrap()
@@ -70,6 +85,7 @@ public class HealthManager : MonoBehaviour
 
     public static bool BlocksPlayerDamage(GameObject target)
     {
+        ExpireStaleStartupProtection();
         if (!CountdownIsActive || target == null)
             return false;
 
@@ -103,5 +119,20 @@ public class HealthManager : MonoBehaviour
     {
         if (HUDManager.Instance != null)
             HUDManager.Instance.ClearDamageOverlays();
+    }
+
+    private static void ExpireStaleStartupProtection()
+    {
+        if (!_countdownIsActive)
+            return;
+        if (_startupProtectionStartedAt < 0f)
+            return;
+        if (Time.realtimeSinceStartup - _startupProtectionStartedAt <= StartupProtectionMaxSeconds)
+            return;
+
+        _countdownIsActive = false;
+        _startupProtectionStartedAt = -1f;
+        ClearDamageUi();
+        Debug.LogWarning("[HealthManager] Startup protection expired automatically after countdown timeout.");
     }
 }
