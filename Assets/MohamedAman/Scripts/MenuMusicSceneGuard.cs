@@ -1,5 +1,8 @@
 using System.Collections;
+using System.Collections.Generic;
+using System.IO;
 using UnityEngine;
+using UnityEngine.Networking;
 using UnityEngine.SceneManagement;
 
 /// <summary>
@@ -14,6 +17,15 @@ using UnityEngine.SceneManagement;
 public static class MenuMusicSceneGuard
 {
     private const float FadeDuration = 0.45f;
+    private const string MusicObjectName = "LobbyMusic";
+    private const string ThemeName = "MainMenu_LobbyTheme";
+    private static bool _loadRoutineActive;
+
+    private struct MenuMusicCandidate
+    {
+        public string Url;
+        public AudioType Type;
+    }
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void Bootstrap()
@@ -36,25 +48,129 @@ public static class MenuMusicSceneGuard
         PruneDuplicateLobbyMusic();
 
         bool isMenu = IsMenuScene(s.name);
-        GameObject host = GameObject.Find("LobbyMusic");
-        if (host == null) return;
+        if (isMenu)
+        {
+            EnsureMenuMusicPlaying();
+            return;
+        }
 
+        GameObject host = GameObject.Find(MusicObjectName);
+        if (host == null) return;
         AudioSource src = host.GetComponent<AudioSource>();
         if (src == null) return;
 
-        if (isMenu)
+        // Fade out so transitions don't pop.
+        CoroutineHost.Run(FadeAndStop(src, FadeDuration));
+    }
+
+    private static void EnsureMenuMusicPlaying()
+    {
+        GameObject host = GameObject.Find(MusicObjectName);
+        if (host == null)
         {
-            // RuntimeMenuBuilder restarts the clip on its own when it rebuilds
-            // the menu; we just make sure the source is not muted from a
-            // previous gameplay scene.
-            src.mute = false;
-            AudioSettingsRuntime.RefreshMenuLobbyMusicIfPresent();
+            host = new GameObject(MusicObjectName);
+            Object.DontDestroyOnLoad(host);
         }
-        else
+
+        AudioSource src = host.GetComponent<AudioSource>();
+        if (src == null)
+            src = host.AddComponent<AudioSource>();
+
+        ApplyMenuMusicSourceSettings(src);
+
+        if (src.clip != null)
         {
-            // Fade out so transitions don't pop.
-            CoroutineHost.Run(FadeAndStop(src, FadeDuration));
+            if (!src.isPlaying)
+                src.Play();
+            return;
         }
+
+        AudioClip resourcesClip = Resources.Load<AudioClip>(ThemeName);
+        if (resourcesClip != null)
+        {
+            src.clip = resourcesClip;
+            src.Play();
+            return;
+        }
+
+        if (!_loadRoutineActive)
+            CoroutineHost.Run(LoadMenuMusicFromDisk(src));
+    }
+
+    private static void ApplyMenuMusicSourceSettings(AudioSource src)
+    {
+        if (src == null) return;
+        src.loop = true;
+        src.playOnAwake = false;
+        src.mute = false;
+        src.spatialBlend = 0f;
+        src.ignoreListenerPause = false;
+        src.volume = AudioSettingsRuntime.ScaledMusic(AudioSettingsRuntime.MenuLobbyMusicDesignMix);
+    }
+
+    private static IEnumerator LoadMenuMusicFromDisk(AudioSource src)
+    {
+        _loadRoutineActive = true;
+        MenuMusicCandidate[] candidates = BuildMenuMusicCandidates();
+
+        for (int i = 0; i < candidates.Length; i++)
+        {
+            if (src == null || !IsMenuScene(SceneManager.GetActiveScene().name))
+                break;
+
+            using (UnityWebRequest www = UnityWebRequestMultimedia.GetAudioClip(candidates[i].Url, candidates[i].Type))
+            {
+                yield return www.SendWebRequest();
+
+                if (www.result != UnityWebRequest.Result.Success)
+                    continue;
+
+                AudioClip clip = DownloadHandlerAudioClip.GetContent(www);
+                if (clip == null)
+                    continue;
+
+                clip.name = ThemeName;
+                src.clip = clip;
+                ApplyMenuMusicSourceSettings(src);
+                if (!src.isPlaying)
+                    src.Play();
+                _loadRoutineActive = false;
+                yield break;
+            }
+        }
+
+        _loadRoutineActive = false;
+    }
+
+    private static MenuMusicCandidate[] BuildMenuMusicCandidates()
+    {
+        var candidates = new List<MenuMusicCandidate>(12);
+
+        void AddFileIfPresent(string absolutePath, AudioType type)
+        {
+            if (string.IsNullOrEmpty(absolutePath) || !File.Exists(absolutePath)) return;
+            candidates.Add(new MenuMusicCandidate
+            {
+                Url = "file:///" + absolutePath.Replace("\\", "/"),
+                Type = type
+            });
+        }
+
+        void AddFolder(string folder)
+        {
+            if (string.IsNullOrEmpty(folder)) return;
+            AddFileIfPresent(Path.Combine(folder, ThemeName + ".ogg"), AudioType.OGGVORBIS);
+            AddFileIfPresent(Path.Combine(folder, ThemeName + ".wav"), AudioType.WAV);
+            AddFileIfPresent(Path.Combine(folder, ThemeName + ".mp3"), AudioType.MPEG);
+            AddFileIfPresent(Path.Combine(folder, ThemeName + ".mp4"), AudioType.MPEG);
+        }
+
+        AddFolder(Path.Combine(Application.dataPath, "MohamedAman", "Resources"));
+        AddFolder(Path.Combine(Application.dataPath, "MohamedAman", "StreamingAssets"));
+        AddFolder(Path.Combine(Application.dataPath, "Audio"));
+        AddFolder(Application.streamingAssetsPath);
+
+        return candidates.ToArray();
     }
 
     private static bool IsMenuScene(string sceneName)
@@ -84,6 +200,9 @@ public static class MenuMusicSceneGuard
         float t = 0f;
         while (t < duration && src != null)
         {
+            if (IsMenuScene(SceneManager.GetActiveScene().name))
+                yield break;
+
             t += Time.unscaledDeltaTime;
             float k = Mathf.Clamp01(t / duration);
             src.volume = Mathf.Lerp(startVol, 0f, k);
@@ -91,6 +210,9 @@ public static class MenuMusicSceneGuard
         }
         if (src != null)
         {
+            if (IsMenuScene(SceneManager.GetActiveScene().name))
+                yield break;
+
             src.Stop();
             src.volume = 0f;
         }
@@ -106,7 +228,7 @@ public static class MenuMusicSceneGuard
         GameObject first = null;
         for (int i = 0; i < all.Length; i++)
         {
-            if (all[i] == null || all[i].name != "LobbyMusic") continue;
+            if (all[i] == null || all[i].name != MusicObjectName) continue;
             if (first == null) { first = all[i]; continue; }
             Object.Destroy(all[i]);
         }

@@ -10,9 +10,9 @@ using UnityEngine.UI;
 /// Toggle, Slider, etc.) in every loaded scene. Mirrors the bootstrap pattern
 /// already used by <see cref="UIClickAudio"/>.
 ///
-/// Sources its clip from Resources/Audio/HoverButtonSound (AudioClip). If the
-/// asset is missing, the system falls back to a procedurally-synthesised tick
-/// so menus are never silent.
+/// Sources its clip from the auto-built audio database or
+/// Resources/Audio/UIClickMenuSound. If the asset is missing, the system falls
+/// back to a procedurally-synthesised tick so menus are never silent.
 ///
 /// Dedup: <see cref="ISelectHandler.OnSelect"/> fires only when selection
 /// actually changes between widgets, and pointer-enter fires only on a fresh
@@ -201,12 +201,12 @@ public class UIHoverSelectAudio : MonoBehaviour
 
 #if UNITY_EDITOR
         if (_hoverClip == null)
-            _hoverClip = UnityEditor.AssetDatabase.LoadAssetAtPath<AudioClip>("Assets/MohamedAman/Materials/UI_clickSound.mp3");
+            _hoverClip = UnityEditor.AssetDatabase.LoadAssetAtPath<AudioClip>("Assets/MohamedAman/Materials/UIClickMenuSound.mp3");
 #endif
 
         if (_hoverClip == null)
         {
-            _hoverClip = Resources.Load<AudioClip>("Audio/UI_clickSound");
+            _hoverClip = Resources.Load<AudioClip>("Audio/UIClickMenuSound");
         }
 
         if (_hoverClip == null)

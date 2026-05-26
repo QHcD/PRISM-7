@@ -6,6 +6,8 @@ using Photon.Pun;
 
 public class PlayerHealth : MonoBehaviour, IDamageable
 {
+    private const bool VerboseHealthLogs = false;
+
     [Header("Health")]
     public float maxHealth = 100f;
     public float currentHealth = 100f;
@@ -80,13 +82,15 @@ public class PlayerHealth : MonoBehaviour, IDamageable
 
         if (_deathHandled || amount <= 0f)
         {
-            Debug.Log($"[Health] rejected damage reason=dead-or-zero amount={amount}");
+            if (VerboseHealthLogs)
+                Debug.Log($"[Health] rejected damage reason=dead-or-zero amount={amount}");
             return;
         }
 
         if (MultiplayerMode.IsMultiplayer && !IsLocalOwnedPlayer())
         {
-            Debug.Log($"[Health] rejected damage reason=non-owner actor={GetPhotonActorNumber()}");
+            if (VerboseHealthLogs)
+                Debug.Log($"[Health] rejected damage reason=non-owner actor={GetPhotonActorNumber()}");
             return;
         }
 
@@ -94,7 +98,8 @@ public class PlayerHealth : MonoBehaviour, IDamageable
         float absorbed = Mathf.Abs(amount);
         currentHealth = Mathf.Max(0f, currentHealth - absorbed);
 
-        Debug.Log($"[Health] TakeDamage amount={absorbed} before={before} after={currentHealth} actor={GetPhotonActorNumber()} local={IsLocalOwnedPlayer()}");
+        if (VerboseHealthLogs)
+            Debug.Log($"[Health] TakeDamage amount={absorbed} before={before} after={currentHealth} actor={GetPhotonActorNumber()} local={IsLocalOwnedPlayer()}");
 
         timeSinceLastDamage = 0f;
         isRegenerating = false;
@@ -124,7 +129,7 @@ public class PlayerHealth : MonoBehaviour, IDamageable
             return;
 
         currentHealth = Mathf.Clamp(syncedHealth, 0f, maxHealth);
-        if (fromNetworkStream)
+        if (fromNetworkStream && VerboseHealthLogs)
             Debug.Log($"[Health] synced hp={Mathf.CeilToInt(currentHealth)}/{Mathf.CeilToInt(maxHealth)} actor={GetPhotonActorNumber()}");
     }
 
@@ -136,7 +141,8 @@ public class PlayerHealth : MonoBehaviour, IDamageable
         if (HUDManager.Instance != null)
         {
             HUDManager.Instance.UpdateHealth(currentHealth, maxHealth, this);
-            Debug.Log($"[Health] HUD updated hp={Mathf.CeilToInt(currentHealth)}/{Mathf.CeilToInt(maxHealth)}");
+            if (VerboseHealthLogs)
+                Debug.Log($"[Health] HUD updated hp={Mathf.CeilToInt(currentHealth)}/{Mathf.CeilToInt(maxHealth)}");
             if (showFlash && flashAmount > 0f)
                 HUDManager.Instance.ShowDamageFlash(flashAmount);
         }

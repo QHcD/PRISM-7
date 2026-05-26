@@ -11,8 +11,8 @@ using UnityEngine.UI;
 /// Click clip source (in priority order):
 ///   1. Runtime override via <see cref="SetClickClip"/> — used by
 ///      <see cref="PlayerSfx"/> to push the project's
-///      Assets/MohamedAman/Materials/UI_clickSound.mp3 in at Awake.
-///   2. <c>Resources/Audio/ClickButtonSound</c> as <see cref="AudioClip"/>
+///      Assets/MohamedAman/Materials/UIClickMenuSound.mp3 in at Awake.
+///   2. <c>Resources/Audio/UIClickMenuSound</c> as <see cref="AudioClip"/>
 ///      (drop a .wav/.ogg/.mp3 with that name to override globally).
 ///   3. A snappy procedural click synthesised at runtime — guaranteed
 ///      fallback so menus are never silent.
@@ -101,7 +101,7 @@ public class UIClickAudio : MonoBehaviour
     /// <summary>
     /// Runtime override for the click clip. Used by PlayerSfx so a single
     /// Inspector field on the Player prefab can route the project's UI click
-    /// asset (e.g. UI_clickSound.mp3) into this global system without needing
+    /// asset (e.g. UIClickMenuSound.mp3) into this global system without needing
     /// the asset to live under a Resources/ folder.
     /// </summary>
     public void SetClickClip(AudioClip clip)
@@ -202,14 +202,14 @@ public class UIClickAudio : MonoBehaviour
         // Support loading from Assets/MohamedAman/Materials/ in editor as secondary fallback
 #if UNITY_EDITOR
         if (_clickClip == null)
-            _clickClip = UnityEditor.AssetDatabase.LoadAssetAtPath<AudioClip>("Assets/MohamedAman/Materials/TapClick.mp3");
+            _clickClip = UnityEditor.AssetDatabase.LoadAssetAtPath<AudioClip>("Assets/MohamedAman/Materials/UIClickMenuSound.mp3");
         if (_hoverClip == null)
-            _hoverClip = UnityEditor.AssetDatabase.LoadAssetAtPath<AudioClip>("Assets/MohamedAman/Materials/UI_clickSound.mp3");
+            _hoverClip = UnityEditor.AssetDatabase.LoadAssetAtPath<AudioClip>("Assets/MohamedAman/Materials/UIClickMenuSound.mp3");
 #endif
 
         if (_clickClip == null)
         {
-            _clickClip = Resources.Load<AudioClip>("Audio/TapClick");
+            _clickClip = Resources.Load<AudioClip>("Audio/UIClickMenuSound");
         }
         if (_clickClip == null)
         {
@@ -226,7 +226,7 @@ public class UIClickAudio : MonoBehaviour
 
         if (_hoverClip == null)
         {
-            _hoverClip = Resources.Load<AudioClip>("Audio/UI_clickSound");
+            _hoverClip = Resources.Load<AudioClip>("Audio/UIClickMenuSound");
         }
     }
 

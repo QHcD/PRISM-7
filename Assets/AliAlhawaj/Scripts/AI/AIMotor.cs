@@ -1,8 +1,11 @@
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.AI;
 
 public static class AIMotor
 {
+    private static readonly HashSet<int> RootMotionSuppressedHosts = new HashSet<int>();
+
     public static void ApplyBlackPlayerLocomotion(NavMeshAgent agent, EnemyController host)
     {
         if (agent == null || host == null)
@@ -28,12 +31,17 @@ public static class AIMotor
         if (host == null)
             return;
 
+        int hostId = host.GetInstanceID();
+        if (RootMotionSuppressedHosts.Contains(hostId))
+            return;
+
         Animator[] animators = host.GetComponentsInChildren<Animator>(true);
         for (int i = 0; i < animators.Length; i++)
         {
             if (animators[i] != null)
                 animators[i].applyRootMotion = false;
         }
+        RootMotionSuppressedHosts.Add(hostId);
     }
 
     public static void EnforceSprintPursuit(EnemyController host)
@@ -53,7 +61,12 @@ public static class AIMotor
         agent.stoppingDistance = EnemyController.CombatStoppingDistance;
         ApplyBlackPlayerLocomotion(agent, host);
         SuppressRootMotion(host);
-        agent.SetDestination(target.position);
+        Vector3 targetPosition = target.position;
+        if (!agent.pathPending &&
+            (!agent.hasPath || (agent.destination - targetPosition).sqrMagnitude > 1f))
+        {
+            agent.SetDestination(targetPosition);
+        }
     }
 
     public static void DrivePursuit(EnemyController host, float stoppingDistance)

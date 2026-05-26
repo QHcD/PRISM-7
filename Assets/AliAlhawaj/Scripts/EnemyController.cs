@@ -432,6 +432,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     private float _chaseGateTimer;
     private Transform _chaseGateTarget;
     private bool _chaseGateResult;
+    private float _immediateCombatInterruptTimer;
     private float _idleTimer;
     private float _navStuckTimer;
     private AIStateId _resumeAfterStuck = AIStateId.Patrol;
@@ -860,7 +861,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             && _agent != null && _agent.enabled && _agent.isOnNavMesh)
         {
             if (_agent.isStopped) _agent.isStopped = false;
-            if (!_agent.hasPath || _agent.pathPending == false)
+            if (!_agent.pathPending && (!_agent.hasPath || (_agent.destination - _target.position).sqrMagnitude > 1f))
             {
                 Vector3 dest = _target.position;
                 if ((_agent.destination - dest).sqrMagnitude > 0.25f)
@@ -3240,6 +3241,11 @@ public class EnemyController : MonoBehaviour, IDamageable
         if (_state == AIStateId.Attack && _attackInProgress && _target != null && IsHostileAlive(_target))
             return;
 
+        _immediateCombatInterruptTimer -= Time.deltaTime;
+        if (_immediateCombatInterruptTimer > 0f)
+            return;
+        _immediateCombatInterruptTimer = 0.12f;
+
         float scanRadius = Mathf.Max(detectionRadius, aggressiveScanRadius);
         Transform threat = AISensing.FindClosestHostile(this, scanRadius);
         if (threat == null || !IsHostileAlive(threat))
@@ -3925,49 +3931,6 @@ public class EnemyController : MonoBehaviour, IDamageable
         _equippedWeaponHitbox = null;
         _activeWeaponSocket   = null;
         _activeWeaponHandBone = null;
-
-        // Level 12 saw always uses the main attach path (bip_hand_R + stabilization).
-        // WeaponGripSystem uses its own bone resolution which may pick weapon_bone_R
-        // (a different bone with a baked orientation), producing an inconsistent grip
-        // across enemies depending on their Inspector setup.
-        if (weaponGripSystem != null && level != 12)
-        {
-            equippedWeaponObject = weaponGripSystem.AttachWeapon(
-                characterRoot: gameObject,
-                weaponPrefab: weaponPrefab,
-                isPlayer: false,
-                level: level,
-                damage: Mathf.RoundToInt(attackDamage));
-
-            if (equippedWeaponObject != null)
-            {
-                WeaponLoadout catalogLoadout = WeaponLoadoutCatalog.Get(level);
-                equippedWeaponObject.transform.localPosition    = catalogLoadout.EnemyLocalPosition;
-                equippedWeaponObject.transform.localEulerAngles = catalogLoadout.EnemyLocalEuler;
-                if (level == 2) ApplyKatanaHumanoidGrip(equippedWeaponObject, null);
-
-                // Expose the hand bone so LateUpdate's world-space rotation fix
-                // can run for this path too.  WeaponGripSystem parents the weapon
-                // directly to the hand bone (no intermediate socket), so the
-                // weapon's immediate parent IS the hand bone.
-                _activeWeaponHandBone = equippedWeaponObject.transform.parent;
-
-                WeaponHitbox wh = equippedWeaponObject.GetComponent<WeaponHitbox>();
-                if (wh == null) wh = equippedWeaponObject.AddComponent<WeaponHitbox>();
-                wh.damage = Mathf.Max(1, Mathf.RoundToInt(attackDamage));
-                wh.meleeAttackRange = GetStrictMeleeStrikeRange();
-                wh.maxAttackRange = GetStrictMeleeStrikeRange() + 0.35f;
-                if (level == 12)
-                    wh.overlapRadius = 0.45f;
-                _equippedWeaponHitbox = wh;
-                _equippedWeaponPrefab = weaponPrefab;
-                _equippedWeaponLevel = level;
-                ForceWeaponRenderable(equippedWeaponObject);
-                LogWeaponRestoreState("enemy", equippedWeaponObject, weaponPrefab);
-                _weaponAttachInProgress = false;
-                return;
-            }
-        }
 
         // ── Resolve level and pull ALL grip data from the catalog. ───────────
         // This makes AttachWeaponToHand the single source of truth for enemy

@@ -28,7 +28,6 @@ public static class WeaponHitAudioDatabaseBuilder
     private const string DatabaseAssetPath = "Assets/MohamedAman/Resources/WeaponHitAudioDatabase.asset";
     private static readonly Regex LevelRx  = new Regex(@"^level(\d{1,2})", RegexOptions.IgnoreCase);
     private static readonly Regex VictoryRx = new Regex(@"v[ic]+tro?y|victroy", RegexOptions.IgnoreCase);
-    private static readonly Regex UIHoverRx  = new Regex(@"ui_clicksound", RegexOptions.IgnoreCase);
     private static readonly Regex UIClickRx  = new Regex(@"tapclick", RegexOptions.IgnoreCase);
 
     // Editor-load safety net: make sure the database exists the moment the
@@ -95,8 +94,10 @@ public static class WeaponHitAudioDatabaseBuilder
         string victoryPath = null;
         AudioClip uiHoverHit = null;
         string uiHoverPath = null;
+        int uiHoverPriority = 0;
         AudioClip uiClickHit = null;
         string uiClickPath = null;
+        int uiClickPriority = 0;
 
         foreach (var g in clipGuids)
         {
@@ -116,22 +117,36 @@ public static class WeaponHitAudioDatabaseBuilder
                 continue;
             }
 
-            if (UIHoverRx.IsMatch(fileName))
+            int hoverPriority = GetUiHoverPriority(fileName);
+            if (hoverPriority > 0)
             {
-                if (uiHoverPath == null || string.CompareOrdinal(path, uiHoverPath) > 0)
+                if (hoverPriority > uiHoverPriority ||
+                    (hoverPriority == uiHoverPriority && (uiHoverPath == null || string.CompareOrdinal(path, uiHoverPath) > 0)))
                 {
                     var hClip = AssetDatabase.LoadAssetAtPath<AudioClip>(path);
-                    if (hClip != null) { uiHoverHit = hClip; uiHoverPath = path; }
+                    if (hClip != null)
+                    {
+                        uiHoverHit = hClip;
+                        uiHoverPath = path;
+                        uiHoverPriority = hoverPriority;
+                    }
                 }
                 continue;
             }
 
-            if (UIClickRx.IsMatch(fileName))
+            int clickPriority = GetUiClickPriority(fileName);
+            if (clickPriority > 0)
             {
-                if (uiClickPath == null || string.CompareOrdinal(path, uiClickPath) > 0)
+                if (clickPriority > uiClickPriority ||
+                    (clickPriority == uiClickPriority && (uiClickPath == null || string.CompareOrdinal(path, uiClickPath) > 0)))
                 {
                     var cClip = AssetDatabase.LoadAssetAtPath<AudioClip>(path);
-                    if (cClip != null) { uiClickHit = cClip; uiClickPath = path; }
+                    if (cClip != null)
+                    {
+                        uiClickHit = cClip;
+                        uiClickPath = path;
+                        uiClickPriority = clickPriority;
+                    }
                 }
                 continue;
             }
@@ -208,6 +223,30 @@ public static class WeaponHitAudioDatabaseBuilder
         var m = LevelRx.Match(sb.ToString());
         if (!m.Success) return 0;
         return int.TryParse(m.Groups[1].Value, out int lvl) ? lvl : 0;
+    }
+
+    private static int GetUiHoverPriority(string fileName)
+    {
+        string token = NormalizeAssetToken(fileName);
+        if (token == "uiclickmenusound" || token == "newuiclickmenusound") return 2;
+        if (token == "uiclicksound" || token == "uiclicksounds") return 1;
+        return 0;
+    }
+
+    private static int GetUiClickPriority(string fileName)
+    {
+        string token = NormalizeAssetToken(fileName);
+        if (token == "uiclickmenusound" || token == "newuiclickmenusound") return 2;
+        if (UIClickRx.IsMatch(fileName)) return 1;
+        return 0;
+    }
+
+    private static string NormalizeAssetToken(string fileName)
+    {
+        var sb = new StringBuilder(fileName.Length);
+        foreach (var c in fileName)
+            if (char.IsLetterOrDigit(c)) sb.Append(char.ToLowerInvariant(c));
+        return sb.ToString();
     }
 
     private static void EnsureFolder(string folder)
