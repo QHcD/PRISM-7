@@ -266,12 +266,12 @@ public class EnemyController : MonoBehaviour, IDamageable
     private float _navValidateTimer;
     private Vector3 _watchdogLastPosition;
     private float _aiBuildLogTimer;
-    private float _noPathReacquireSince = -1f;
     private bool _authorityLogged;
     private bool _destinationSuccessLogged;
     private int _staticFrameCount;
     private Vector3 _lastAntiFreezePosCheck;
     private float _enemyMoveDebugTimer;
+    private float _nextPlayerCacheRefreshTime;
 
     [Header("Hit Reaction")]
     public float flinchDuration = 0.25f;
@@ -282,7 +282,6 @@ public class EnemyController : MonoBehaviour, IDamageable
     [Header("Combat Voice SFX")]
     public AudioClip[] hurtSounds;
     public AudioClip[] deathSounds;
-    private float _lastVoiceTime = -100f;
 
     [Tooltip("Damage-window start after attack trigger (seconds).")]
     public float attackHitboxWindup = 0.12f;
@@ -655,19 +654,19 @@ public class EnemyController : MonoBehaviour, IDamageable
 
     private void CachePlayerTransform()
     {
+        _nextPlayerCacheRefreshTime = Time.time + 0.75f;
         PlayerHealth ph = Object.FindFirstObjectByType<PlayerHealth>();
         _cachedPlayerTransform = ph != null ? ph.transform : null;
     }
 
     private Transform GetCachedPlayerTransform()
     {
-        if (_cachedPlayerTransform == null)
+        if (_cachedPlayerTransform == null && Time.time >= _nextPlayerCacheRefreshTime)
             CachePlayerTransform();
         return _cachedPlayerTransform;
     }
 
     private bool _navMeshErrorLogged;
-    private float _nextForceRetargetTime;
 
     private bool EnsureAgentOnNavMesh()
     {
@@ -2803,10 +2802,13 @@ public class EnemyController : MonoBehaviour, IDamageable
     /// </summary>
     private void ForceLocomotionState(float normalizedSpeed)
     {
+        // Safety fallback: if somehow the animator left the Locomotion
+        // blend-tree state, nudge it back.  We target "Locomotion" (the
+        // blend-tree state) — NOT standalone Walk/Idle states which may
+        // not exist in every controller variant.
         if (_anim == null || _anim.runtimeAnimatorController == null) return;
 
-        string stateName     = normalizedSpeed > 0.05f ? "Walk" : "Idle";
-        string fullStateName = "Base Layer." + stateName;
+        const string fullStateName = "Base Layer.Locomotion";
         int    stateHash     = Animator.StringToHash(fullStateName);
 
         if (!_anim.HasState(0, stateHash)) return;
@@ -3223,7 +3225,6 @@ public class EnemyController : MonoBehaviour, IDamageable
     public void ResetChaseRepathClock()
     {
         _repathTimer = 0f;
-        _nextForceRetargetTime = 0f;
     }
 
     public void RefreshChaseDestinationImmediate()

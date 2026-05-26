@@ -8,6 +8,8 @@ using UnityEngine.UI;
 
 public class PauseMenuController : MonoBehaviour
 {
+    private static readonly bool VerbosePauseDiagnostics = false;
+
     private GameObject pauseCanvas;
     private GameObject mainPanel;
     private GameObject settingsPanel;
@@ -23,7 +25,7 @@ public class PauseMenuController : MonoBehaviour
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
     private static void StaticBootstrapLog()
     {
-        Debug.Log("[MPPauseDiag] static bootstrap loaded");
+        LogPauseDiag("[MPPauseDiag] static bootstrap loaded");
     }
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
@@ -45,7 +47,7 @@ public class PauseMenuController : MonoBehaviour
             return;
 
         if (scene.name == MultiplayerMode.MultiplayerSceneName)
-            Debug.Log("[MPPauseDiag] sceneLoaded MultiplayerGameScene");
+            LogPauseDiag("[MPPauseDiag] sceneLoaded MultiplayerGameScene");
 
         if (scene.name != MultiplayerMode.SinglePlayerSceneName &&
             scene.name != MultiplayerMode.MultiplayerSceneName)
@@ -80,7 +82,7 @@ public class PauseMenuController : MonoBehaviour
         {
             GameObject go = new GameObject("PauseMenuController_Runtime");
             kept = go.AddComponent<PauseMenuController>();
-            Debug.Log("[MPPauseDiag] forced runtime controller created");
+            LogPauseDiag("[MPPauseDiag] forced runtime controller created");
         }
 
         if (!kept.gameObject.activeSelf)
@@ -89,16 +91,22 @@ public class PauseMenuController : MonoBehaviour
             kept.enabled = true;
 
         string backend = DetectInputBackend();
-        Debug.Log("[MPPauseDiag] PauseMenuController exists = true");
-        Debug.Log("[MPPauseDiag] enabled = " + kept.enabled);
-        Debug.Log("[MPPauseDiag] GameObject active = " + kept.gameObject.activeInHierarchy);
-        Debug.Log("[MPPauseDiag] current scene = " + scene.name);
-        Debug.Log("[MPPauseDiag] input backend detected = " + backend);
+        LogPauseDiag("[MPPauseDiag] PauseMenuController exists = true");
+        LogPauseDiag("[MPPauseDiag] enabled = " + kept.enabled);
+        LogPauseDiag("[MPPauseDiag] GameObject active = " + kept.gameObject.activeInHierarchy);
+        LogPauseDiag("[MPPauseDiag] current scene = " + scene.name);
+        LogPauseDiag("[MPPauseDiag] input backend detected = " + backend);
     }
 
     private static string DetectInputBackend()
     {
         return "New";
+    }
+
+    private static void LogPauseDiag(string message)
+    {
+        if (VerbosePauseDiagnostics)
+            Debug.Log(message);
     }
 
     private readonly string[] graphicsLabels = { "LOW", "MEDIUM", "HIGH" };
@@ -111,14 +119,12 @@ public class PauseMenuController : MonoBehaviour
 
     private void Awake()
     {
-        Debug.Log("[MPPauseDiag] Awake");
+        LogPauseDiag("[MPPauseDiag] Awake");
         try { SettingsManager.ApplyDisplayPreferences(); } catch (System.Exception e) { Debug.LogWarning("[MPPauseDiag] Awake settings err: " + e.Message); }
         try { AudioSettingsRuntime.ApplyListenerVolume(); } catch (System.Exception e) { Debug.LogWarning("[MPPauseDiag] Awake audio err: " + e.Message); }
     }
 
-    private float _aliveLogTimer;
     private float _nextEscAllowedTime;
-    private bool _firstUpdateLogged;
     private bool _firstKeyLogged;
 
     private void OnEnable()
@@ -149,8 +155,6 @@ public class PauseMenuController : MonoBehaviour
                 ResumeGame();
             return;
         }
-
-        _firstUpdateLogged = true; // kept to preserve any external check that reads the field
 
         // Periodic "controller alive" log removed — it produced unnecessary
         // background spam during gameplay. The first-frame ping above is enough.
@@ -185,7 +189,7 @@ public class PauseMenuController : MonoBehaviour
             if (kb != null && kb.anyKey.wasPressedThisFrame)
             {
                 _firstKeyLogged = true;
-                Debug.Log("[MPPauseDiag] first key detected (InputSystem Keyboard.current)");
+                LogPauseDiag("[MPPauseDiag] first key detected (InputSystem Keyboard.current)");
             }
         }
 
@@ -203,13 +207,13 @@ public class PauseMenuController : MonoBehaviour
         if (isPaused)
         {
             ResumeGame();
-            Debug.Log("[MPPauseDiag] normal pause menu visible = false");
+            LogPauseDiag("[MPPauseDiag] normal pause menu visible = false");
         }
         else
         {
-            Debug.Log("[MPPauseDiag] calling normal ShowPauseMenu");
+            LogPauseDiag("[MPPauseDiag] calling normal ShowPauseMenu");
             ShowPauseMenu();
-            Debug.Log("[MPPauseDiag] normal pause menu visible = " + (pauseCanvas != null));
+            LogPauseDiag("[MPPauseDiag] normal pause menu visible = " + (pauseCanvas != null));
         }
     }
 
@@ -218,7 +222,7 @@ public class PauseMenuController : MonoBehaviour
         Keyboard kb = Keyboard.current;
         if (kb != null && kb.escapeKey.wasPressedThisFrame)
         {
-            Debug.Log("[MPPauseDiag] ESC detected by InputSystem");
+            LogPauseDiag("[MPPauseDiag] ESC detected by InputSystem");
             return true;
         }
 
@@ -241,7 +245,7 @@ public class PauseMenuController : MonoBehaviour
 
     private void ShowPauseMenu()
     {
-        Debug.Log("[MPPause] using normal pause menu");
+        LogPauseDiag("[MPPause] using normal pause menu");
         EnsureEventSystem();
         BuildPauseMenu();
         ShowPanel(mainPanel);
@@ -259,7 +263,7 @@ public class PauseMenuController : MonoBehaviour
         isPaused = true;
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible = true;
-        Debug.Log("[MPPause] normal menu opened");
+        LogPauseDiag("[MPPause] normal menu opened");
     }
 
     private void LateUpdate()
@@ -276,7 +280,7 @@ public class PauseMenuController : MonoBehaviour
         if (!MultiplayerMode.IsMultiplayer)
             Time.timeScale = 1f;
         isPaused = false;
-        Debug.Log("[MPPause] normal menu closed");
+        LogPauseDiag("[MPPause] normal menu closed");
 
         if (pauseCanvas != null)
         {
@@ -307,7 +311,7 @@ public class PauseMenuController : MonoBehaviour
         // never blocks the menu transition.
         if (MultiplayerMode.IsMultiplayer)
         {
-            Debug.Log("[MPPause] leaving Photon room then main menu");
+            LogPauseDiag("[MPPause] leaving Photon room then main menu");
             // Latch the guard BEFORE LeaveRoom so any late property-write call
             // (SetReadyState, MpRoomConfig, MpMatchController timer ticks)
             // that fires during the unload window early-outs cleanly.
@@ -322,7 +326,7 @@ public class PauseMenuController : MonoBehaviour
 #endif
             MultiplayerMode.SetSinglePlayer();
             UnityEngine.SceneManagement.SceneManager.LoadScene("MainMenu");
-            Debug.Log("[MPLeave] loaded MainMenu");
+            LogPauseDiag("[MPLeave] loaded MainMenu");
             return;
         }
 

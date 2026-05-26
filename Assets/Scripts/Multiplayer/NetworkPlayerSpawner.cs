@@ -23,6 +23,7 @@ public class NetworkPlayerSpawner : MonoBehaviour
     public float obstacleClearance = 0.35f;
     public LayerMask obstacleMask = ~0;
     private static bool statsResetForCurrentMultiplayerScene;
+    private static bool mainMenuSpawnBlockLogged;
     private bool spawnRoutineRunning;
     private bool lastGroundSecureOk;
 
@@ -165,7 +166,11 @@ public class NetworkPlayerSpawner : MonoBehaviour
     {
         if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "MainMenu")
         {
-            Debug.Log("[PhotonSpawn] Blocked in MainMenu.");
+            if (!mainMenuSpawnBlockLogged)
+            {
+                mainMenuSpawnBlockLogged = true;
+                Debug.Log("[PhotonSpawn] Blocked in MainMenu.");
+            }
             return;
         }
 

@@ -1040,7 +1040,10 @@ public static class SciFiArenaBuilder
             GameObject go = all[i].gameObject;
             if (envLayer >= 0) go.layer = envLayer;
             go.isStatic = true;
-            StaticEditorFlags flags = StaticEditorFlags.BatchingStatic | StaticEditorFlags.NavigationStatic;
+            StaticEditorFlags flags = StaticEditorFlags.BatchingStatic;
+#if !UNITY_6000_0_OR_NEWER
+            flags |= StaticEditorFlags.NavigationStatic;
+#endif
             GameObjectUtility.SetStaticEditorFlags(go, flags);
         }
     }

@@ -45,6 +45,15 @@ public class PlayerTacticalActions : MonoBehaviour
     public float TacticalHeight => _standingHeight * tacticalHeightRatio;
     public float ProneColliderHeight => GetProneColliderHeight();
 
+    private bool CanMoveController()
+    {
+        return isActiveAndEnabled
+            && gameObject.activeInHierarchy
+            && _controller != null
+            && _controller.enabled
+            && _controller.gameObject.activeInHierarchy;
+    }
+
     private void Awake()
     {
         _controller = GetComponent<CharacterController>();
@@ -211,7 +220,7 @@ public class PlayerTacticalActions : MonoBehaviour
     /// <summary>Prone-only ground correction (called from LateUpdate while C is held).</summary>
     public void EnforceProneGround()
     {
-        if (!_proneActive || _controller == null || !_controller.enabled)
+        if (!_proneActive || !CanMoveController())
             return;
 
         CacheStandingCollider();
@@ -222,7 +231,7 @@ public class PlayerTacticalActions : MonoBehaviour
 
     public void EnforceGroundContact()
     {
-        if (_controller == null || !_controller.enabled) return;
+        if (!CanMoveController()) return;
 
         Vector3 rayOrigin = transform.position + Vector3.up * 0.5f;
         int mask = BuildGroundMask();
@@ -242,13 +251,13 @@ public class PlayerTacticalActions : MonoBehaviour
 
         float moveY = delta + (delta > 0f ? _controller.skinWidth : -_controller.skinWidth * 0.5f);
         moveY = Mathf.Clamp(moveY, -0.35f, 0.35f);
-        if (Mathf.Abs(moveY) > 0.001f)
+        if (Mathf.Abs(moveY) > 0.001f && CanMoveController())
             _controller.Move(Vector3.up * moveY);
     }
 
     public void FlushGroundSnap(bool zeroMove)
     {
-        if (_controller == null || !_controller.enabled) return;
+        if (!CanMoveController()) return;
 
         if (zeroMove)
             _controller.Move(Vector3.zero);
@@ -265,7 +274,7 @@ public class PlayerTacticalActions : MonoBehaviour
         float targetRootY = hit.point.y - _controller.center.y + _controller.height * 0.5f + _controller.skinWidth;
         float deltaY = targetRootY - transform.position.y;
         deltaY = Mathf.Clamp(deltaY, -0.35f, 0.35f);
-        if (Mathf.Abs(deltaY) > 0.001f)
+        if (Mathf.Abs(deltaY) > 0.001f && CanMoveController())
             _controller.Move(Vector3.up * deltaY);
     }
 

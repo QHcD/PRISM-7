@@ -13,8 +13,10 @@ using Photon.Pun;
 /// Uses CharacterController for precise, non-physics movement.
 ///
 /// Animation is driven entirely by a standard Animator Controller.
-/// Parameters fed each frame: Speed, IsGrounded, IsAttacking, IsSprinting.
-/// The Animator Controller is responsible for all blending and leg motion.
+/// Parameters fed each frame: Speed, VelocityX, VelocityZ, IsGrounded,
+/// IsAttacking, and IsSprinting. The Animator Controller is responsible for
+/// all blending and leg motion; CharacterController remains authoritative for
+/// movement.
 /// </summary>
 [DefaultExecutionOrder(50)]
 public class PlayerController : MonoBehaviour, IDamageable
@@ -88,7 +90,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     public bool debugMovementInput = false;
 
     [Header("Animation")]
-    [Tooltip("Animator controller for the spawned third-person body.")]
+    [Tooltip("Animator controller for the spawned third-person body. BlackPlayer should use Player Controller.controller, not the enemy CrosbyAnimator.")]
     public RuntimeAnimatorController playerAnimatorController;
 
     [Tooltip("Optional humanoid avatar override for the spawned third-person body.")]
@@ -559,7 +561,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
     private void ResolveGroundContact()
     {
-        if (controller == null || isMantling)
+        if (!CanUseCharacterControllerMove() || isMantling)
             return;
         if (verticalVelocity.y > 0.12f)
             return;
@@ -600,7 +602,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
         float moveDown = Mathf.Min(gap, floorSnapSpeed * dt);
         if (moveDown > 0.001f)
-            controller.Move(Vector3.down * moveDown);
+            SafeCharacterControllerMove(Vector3.down * moveDown);
 
         if (verticalVelocity.y < 0f)
             verticalVelocity.y = -GetGroundedStickVelocity();
@@ -1649,7 +1651,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     /// </summary>
     private void ApplyCharacterSeparationPush()
     {
-        if (controller == null || !controller.enabled) return;
+        if (!CanUseCharacterControllerMove()) return;
         if (isMantling || isFlipping) return;
 
         Vector3 worldCenter = transform.TransformPoint(controller.center);
@@ -1691,7 +1693,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (push.sqrMagnitude > 1e-8f)
         {
             float cap = Mathf.Min(ForcedSeparationDistance, maxSeparationPushPerFrame);
-            controller.Move(Vector3.ClampMagnitude(push, cap));
+            SafeCharacterControllerMove(Vector3.ClampMagnitude(push, cap));
         }
     }
 
@@ -1996,7 +1998,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
     private void ApplyMovement()
     {
-        if (controller == null) return;
+        if (!CanUseCharacterControllerMove()) return;
         if (isMantling) return;
 
         Vector3 frameStartPosition = transform.position;
@@ -2114,11 +2116,11 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         Vector3 verticalDelta = new Vector3(0f, verticalVelocity.y * dt, 0f);
         if (IsAscendingJump())
         {
-            controller.Move(verticalDelta);
-            controller.Move(horizontalDelta);
+            SafeCharacterControllerMove(verticalDelta);
+            SafeCharacterControllerMove(horizontalDelta);
         }
         else
-            controller.Move(horizontalDelta + verticalDelta);
+            SafeCharacterControllerMove(horizontalDelta + verticalDelta);
 
         UpdateTacticalManeuverState();
         UpdateStanceCollider();
@@ -2633,7 +2635,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
     private void SnapRootAboveFloorImmediate()
     {
-        if (controller == null) return;
+        if (!CanUseCharacterControllerMove()) return;
 
         Vector3 p = transform.position;
         if (!TryGetWalkableFloorY(out float floorY))
@@ -2648,7 +2650,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             controller.enabled = true;
         }
         else if (gap > 0.001f && gap <= maxFloorSnapDistance)
-            controller.Move(Vector3.down * gap);
+            SafeCharacterControllerMove(Vector3.down * gap);
     }
 
     // Returns a layermask that covers solid ground but excludes the player's
@@ -2894,10 +2896,10 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     /// </summary>
     private void FlushLowProfileGroundSnap(bool forceZeroMove)
     {
-        if (controller == null || !controller.enabled || isMantling) return;
+        if (!CanUseCharacterControllerMove() || isMantling) return;
 
         if (forceZeroMove)
-            controller.Move(Vector3.zero);
+            SafeCharacterControllerMove(Vector3.zero);
 
         int groundMask = GetGroundCheckMask();
         Vector3 rayOrigin = transform.position + Vector3.up * 0.35f;
@@ -2910,7 +2912,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         float targetRootY = hit.point.y - controller.center.y + controller.height * 0.5f + controller.skinWidth;
         float deltaY = targetRootY - transform.position.y;
         if (deltaY > 0.001f)
-            controller.Move(Vector3.up * deltaY);
+            SafeCharacterControllerMove(Vector3.up * deltaY);
 
         if (verticalVelocity.y < 0f)
             verticalVelocity.y = -GetGroundedStickVelocity();
@@ -3019,12 +3021,12 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
     private void ApplyAttackLunge()
     {
-        if (controller == null || !controller.enabled) return;
+        if (!CanUseCharacterControllerMove()) return;
         Vector3 lunge = transform.forward * attackLungeDistance;
         lunge.y = 0f;
         if (staticObstacleMask.value != 0)
             lunge = ClampHorizontalMoveAgainstStatics(lunge);
-        controller.Move(lunge);
+        SafeCharacterControllerMove(lunge);
         ClampInsideArena();
     }
 
@@ -3473,6 +3475,25 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 #endif
     }
 
+    private bool CanUseCharacterControllerMove()
+    {
+        return isActiveAndEnabled
+            && gameObject.activeInHierarchy
+            && controller != null
+            && controller.enabled
+            && controller.gameObject.activeInHierarchy
+            && !IsRemoteNetworkPlayer();
+    }
+
+    private bool SafeCharacterControllerMove(Vector3 motion)
+    {
+        if (!CanUseCharacterControllerMove())
+            return false;
+
+        controller.Move(motion);
+        return true;
+    }
+
     private void DisableRemotePlayerLocalSystems()
     {
 #if PUN_2_OR_NEWER
@@ -3653,16 +3674,45 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         ConfigureAnimatorBinding(anim, forceControllerAssignment: false);
         if (anim.runtimeAnimatorController == null) return;
 
-        // Use input magnitude so Speed snaps to 0 immediately when keys are released,
-        // preventing residual physics velocity keeping the Run animation active while standing still.
-        float normalizedSpeed = moveInputSmoothed.sqrMagnitude > 0.01f
-            ? Mathf.Clamp01(moveInputSmoothed.magnitude)
-            : 0f;
+        // ── Compute animation-driving velocity ratio ─────────────────────────
+        // Use actual horizontal velocity relative to base moveSpeed so that
+        // animation playback matches world-space movement (reduces foot sliding).
+        float actualSpeed = horizontalVelocity.magnitude;
+        float maxSpeed    = moveSpeed * (isSprinting ? sprintMultiplier : 1f);
+        float speedRatio  = maxSpeed > 0.01f ? Mathf.Clamp01(actualSpeed / maxSpeed) : 0f;
 
-        // ── Locomotion (Float) ──────────────────────────────────────────────
-        bool droveSpeedParameter = AnimSetFloat(anim, "Speed", normalizedSpeed, 0.1f);
-        if (!droveSpeedParameter)
-            ForceLocomotionState(anim, normalizedSpeed);
+        // Snap to zero when input is released so Idle plays instantly
+        // (don't let residual deceleration velocity keep Walk playing).
+        bool hasInput = moveInputSmoothed.sqrMagnitude > 0.01f;
+        if (!hasInput) speedRatio = 0f;
+
+        // ── Legacy Speed parameter (drives Idle→Run transitions in some
+        //    controllers). Kept for compatibility but the Locomotion blend
+        //    tree is the primary driver. ──────────────────────────────────────
+        AnimSetFloat(anim, "Speed", speedRatio, 0.1f);
+
+        // ── Directional blend-tree params (VelocityX / VelocityZ) ────────────
+        // Blend-tree positions:
+        //   Idle  (0, 0)    Walk (0, 0.4)    Run (0, 1.0)
+        //   WalkBack (0, -0.6)  StrafeL (-1, 0)  StrafeR (1, 0)
+        //
+        // Scale input so normal walking maps to the Walk zone (~0.4) and
+        // sprinting reaches the Run zone (~1.0). Without this, full-stick
+        // walking sends VelocityZ=1 which plays the Run clip at walk speed
+        // → feet slide.
+        //
+        // Blend scale is modulated by speedRatio so that during acceleration
+        // ramp-up the animation intensity tracks the actual movement —
+        // minimising foot skating.
+        const float walkBlendTarget = 0.45f;  // slightly above Walk(0.4) for full coverage
+        float targetBlend = isSprinting ? 1.0f : walkBlendTarget;
+        float blendScale  = hasInput ? targetBlend * Mathf.Max(speedRatio, 0.15f) : 0f;
+
+        float velX = moveInputSmoothed.x * blendScale;
+        float velZ = moveInputSmoothed.y * blendScale;
+
+        AnimSetFloat(anim, "VelocityX", velX, 0.08f);
+        AnimSetFloat(anim, "VelocityZ", velZ, 0.08f);
 
         // ── Bool params (Player Controller.controller style) ────────────────
         AnimSetBool(anim, "IsAttacking", isAttacking);
@@ -3671,7 +3721,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         AnimSetBool(anim, "IsProne", isProne);
         AnimSetBool(anim, "IsSliding", isSliding);
 
-        // ── Trigger params (CrosbyAnimator style) ───────────────────────────
+        // ── Trigger params (Player Controller.controller style) ─────────────
         // Fire Attack trigger on the frame isAttacking becomes true.
         // Also fire the category-specific trigger (Attack_Light, Attack_Sword,
         // ...) when present on the controller. Falls back silently to the
@@ -3732,10 +3782,13 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
     private static void ForceLocomotionState(Animator anim, float normalizedSpeed)
     {
+        // Safety fallback: if somehow the animator left the Locomotion
+        // blend-tree state, nudge it back.  We target "Locomotion" (the
+        // blend-tree state) — NOT standalone Walk/Idle states which may
+        // not exist in every controller variant.
         if (anim == null || anim.runtimeAnimatorController == null) return;
 
-        string stateName = normalizedSpeed > 0.05f ? "Walk" : "Idle";
-        string fullStateName = $"Base Layer.{stateName}";
+        const string fullStateName = "Base Layer.Locomotion";
         int stateHash = Animator.StringToHash(fullStateName);
 
         if (!anim.HasState(0, stateHash)) return;
@@ -3743,7 +3796,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         AnimatorStateInfo currentState = anim.GetCurrentAnimatorStateInfo(0);
         if (currentState.fullPathHash == stateHash) return;
 
-        anim.CrossFadeInFixedTime(fullStateName, 0.1f, 0);
+        anim.CrossFadeInFixedTime(fullStateName, 0.15f, 0);
     }
 
     // Keep old helpers so no compile errors in code that still calls them
@@ -3769,17 +3822,18 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     {
         if (targetAnimator == null) return;
 
+        targetAnimator.enabled = true;
+        targetAnimator.speed = 1f;
         targetAnimator.applyRootMotion = false;
 
         // ── Resolve controller ────────────────────────────────────────────────
         // Priority 1: Inspector-assigned playerAnimatorController
-        // Priority 2: Auto-load CrosbyAnimator (same controller used by all enemies)
         RuntimeAnimatorController resolvedCtrl = playerAnimatorController;
-        if (resolvedCtrl == null)
-            resolvedCtrl = Resources.Load<RuntimeAnimatorController>("Enemy/CrosbyAnimator");
 
         if (resolvedCtrl != null &&
-            (forceControllerAssignment || targetAnimator.runtimeAnimatorController == null))
+            (forceControllerAssignment ||
+             targetAnimator.runtimeAnimatorController == null ||
+             targetAnimator.runtimeAnimatorController.name.IndexOf("CrosbyAnimator", System.StringComparison.OrdinalIgnoreCase) >= 0))
         {
             targetAnimator.runtimeAnimatorController = resolvedCtrl;
         }
@@ -3798,8 +3852,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             _animatorMissingWarned = true;
             Debug.LogWarning(
                 "[PlayerController] No animator controller could be resolved. " +
-                "Assign one to 'playerAnimatorController' in the Inspector, or ensure " +
-                "Resources/Enemy/CrosbyAnimator exists.",
+                "Assign Player Controller.controller to 'playerAnimatorController' in the Inspector.",
                 targetAnimator);
         }
     }

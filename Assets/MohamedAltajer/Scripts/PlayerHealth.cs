@@ -6,7 +6,7 @@ using Photon.Pun;
 
 public class PlayerHealth : MonoBehaviour, IDamageable
 {
-    private const bool VerboseHealthLogs = false;
+    private static readonly bool VerboseHealthLogs = false;
 
     [Header("Health")]
     public float maxHealth = 100f;

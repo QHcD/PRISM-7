@@ -16,6 +16,7 @@ public class PlayerMovement : MonoBehaviour
     public LayerMask groundMask;
     Vector3 velocity;
     bool isGrounded;
+    private AudioSource _audioSource;
 
     
      public AudioClip footStepSound;
@@ -23,9 +24,17 @@ public class PlayerMovement : MonoBehaviour
  
      private float nextFootstep = 0;
 
+    private void Awake()
+    {
+        _audioSource = GetComponent<AudioSource>();
+    }
+
     // Update is called once per frame
     void Update()
     {
+        if (controller == null || !controller.enabled || !controller.gameObject.activeInHierarchy || !isActiveAndEnabled)
+            return;
+
         isGrounded = Physics.CheckSphere(groundCheck.position, groundDistance, groundMask);
 
         if (isGrounded && velocity.y <0)
@@ -52,7 +61,8 @@ public class PlayerMovement : MonoBehaviour
              nextFootstep -= Time.deltaTime;
              if (nextFootstep <= 0) 
                 {
-                 GetComponent<AudioSource>().PlayOneShot(footStepSound, 0.7f);
+                 if (_audioSource != null && footStepSound != null)
+                     _audioSource.PlayOneShot(footStepSound, 0.7f);
                  nextFootstep += footStepDelay;
                 }
              }

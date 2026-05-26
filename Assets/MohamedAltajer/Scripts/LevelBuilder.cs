@@ -2575,6 +2575,7 @@ public class LevelBuilder : MonoBehaviour
     private static void AnchorWarehouseLightFixtures(Transform root)
     {
         if (root == null) return;
+        bool multiplayerScene = SceneManager.GetActiveScene().name == MultiplayerMode.MultiplayerSceneName;
         Light[] lights = root.GetComponentsInChildren<Light>(true);
         for (int i = 0; i < lights.Length; i++)
         {
@@ -2583,8 +2584,8 @@ public class LevelBuilder : MonoBehaviour
             l.gameObject.SetActive(true);
             if (l.type != LightType.Point && l.type != LightType.Spot) continue;
             l.transform.localPosition = new Vector3(0f, -0.1f, 0f);
-            l.shadows = LightShadows.Soft;
-            l.shadowStrength = 0.75f;
+            l.shadows = multiplayerScene ? LightShadows.None : LightShadows.Soft;
+            l.shadowStrength = multiplayerScene ? 0f : 0.75f;
             if (l.range < 8f) l.range = 8f;
         }
     }

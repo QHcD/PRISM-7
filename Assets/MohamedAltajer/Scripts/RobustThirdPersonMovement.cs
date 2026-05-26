@@ -82,6 +82,15 @@ public class RobustThirdPersonMovement : MonoBehaviour
     public bool IsGrounded => _isGrounded;
     public bool IsSprinting => _isSprinting;
 
+    private bool CanMoveController()
+    {
+        return isActiveAndEnabled
+            && gameObject.activeInHierarchy
+            && _controller != null
+            && _controller.enabled
+            && _controller.gameObject.activeInHierarchy;
+    }
+
     private void Awake()
     {
         _controller = GetComponent<CharacterController>();
@@ -285,6 +294,9 @@ public class RobustThirdPersonMovement : MonoBehaviour
 
     private void ApplyMovement()
     {
+        if (!CanMoveController())
+            return;
+
         Vector3 horizontal = _moveVelocity;
         horizontal.y = 0f;
         Vector3 vertical = new Vector3(0f, _verticalVelocity * Time.deltaTime, 0f);
@@ -330,6 +342,9 @@ public class RobustThirdPersonMovement : MonoBehaviour
     /// </summary>
     private void EnforceGroundContact()
     {
+        if (!CanMoveController())
+            return;
+
         // Cast from 0.5 m above the character's feet — enough clearance to hit
         // the ground even if the transform is slightly inside the collider.
         Vector3 rayOrigin = transform.position + Vector3.up * 0.5f;

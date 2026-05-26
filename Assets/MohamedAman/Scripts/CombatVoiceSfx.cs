@@ -3,6 +3,8 @@ using UnityEngine;
 
 public class CombatVoiceSfx : MonoBehaviour
 {
+    private static readonly bool VerboseCombatVoiceLogs = false;
+
     [Header("Clips")]
     public AudioClip[] hurtClips;
     public AudioClip[] deathClips;
@@ -96,7 +98,8 @@ public class CombatVoiceSfx : MonoBehaviour
         AudioClip clip = PickRandom(hurtClips);
         if (clip == null)
         {
-            Debug.Log($"[CombatVoiceSfx] No hurt/death clips assigned or found on {gameObject.name}");
+            if (VerboseCombatVoiceLogs)
+                Debug.Log($"[CombatVoiceSfx] No hurt/death clips assigned or found on {gameObject.name}");
             return;
         }
 
@@ -104,7 +107,8 @@ public class CombatVoiceSfx : MonoBehaviour
         float pitch = Random.Range(0.95f, 1.05f);
         float vol = AudioSettingsRuntime.ScaledSfx(0.85f);
         PlayVoiceOneShot(clip, pitch, vol);
-        Debug.Log($"[CombatVoiceSfx] Hurt sound played on {gameObject.name}");
+        if (VerboseCombatVoiceLogs)
+            Debug.Log($"[CombatVoiceSfx] Hurt sound played on {gameObject.name}");
     }
 
     public void PlayDeath()
@@ -117,7 +121,8 @@ public class CombatVoiceSfx : MonoBehaviour
         AudioClip clip = PickRandom(deathClips);
         if (clip == null)
         {
-            Debug.Log($"[CombatVoiceSfx] No hurt/death clips assigned or found on {gameObject.name}");
+            if (VerboseCombatVoiceLogs)
+                Debug.Log($"[CombatVoiceSfx] No hurt/death clips assigned or found on {gameObject.name}");
             return;
         }
 
@@ -129,12 +134,14 @@ public class CombatVoiceSfx : MonoBehaviour
         {
             EnsureAudioSource();
             PlayVoiceOneShot(clip, pitch, vol);
-            Debug.Log($"[CombatVoiceSfx] Death sound played on {gameObject.name}");
+            if (VerboseCombatVoiceLogs)
+                Debug.Log($"[CombatVoiceSfx] Death sound played on {gameObject.name}");
             return;
         }
 
         AudioSource.PlayClipAtPoint(clip, pos, vol);
-        Debug.Log($"[CombatVoiceSfx] Death sound played on {gameObject.name}");
+        if (VerboseCombatVoiceLogs)
+            Debug.Log($"[CombatVoiceSfx] Death sound played on {gameObject.name}");
     }
 
     private void PlayVoiceOneShot(AudioClip clip, float pitch, float volume)
