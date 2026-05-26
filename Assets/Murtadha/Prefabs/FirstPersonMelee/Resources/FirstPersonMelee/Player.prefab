@@ -1517,7 +1517,7 @@ MonoBehaviour:
   thrusterApexHeight: 2.15
   gamepadMoveDeadzone: 0.2
   debugMovementInput: 0
-  playerAnimatorController: {fileID: 9100000, guid: 0e3ef47370b809c4989105a0b413222a, type: 2}
+  playerAnimatorController: {fileID: 9100000, guid: e271718b7cc6d4af7a7cb713e7076aeb, type: 2}
   playerAvatar: {fileID: 9000000, guid: 88dc56ed1335a40a28cdeaa63978e7bf, type: 3}
   acceleration: 26
   deceleration: 32

@@ -68,20 +68,8 @@ public class PlayerMovement : MonoBehaviour
         _cameraTransform = cam != null ? cam.transform : null;
     }
 
-    private bool CanMoveController()
-    {
-        return isActiveAndEnabled
-            && gameObject.activeInHierarchy
-            && _controller != null
-            && _controller.enabled
-            && _controller.gameObject.activeInHierarchy;
-    }
-
     private void Update()
     {
-        if (!CanMoveController())
-            return;
-
         // ── STEP 1: Read input (keyboard takes priority; gamepad with deadzone) ─
         float horizontal = 0f;
         float vertical = 0f;
