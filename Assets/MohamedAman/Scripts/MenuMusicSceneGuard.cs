@@ -20,6 +20,7 @@ public static class MenuMusicSceneGuard
     private const string MusicObjectName = "LobbyMusic";
     private const string ThemeName = "MainMenu_LobbyTheme";
     private static bool _loadRoutineActive;
+    private static MenuMusicSingleton _instance;
 
     private struct MenuMusicCandidate
     {
@@ -63,18 +64,9 @@ public static class MenuMusicSceneGuard
         CoroutineHost.Run(FadeAndStop(src, FadeDuration));
     }
 
-    private static void EnsureMenuMusicPlaying()
+    public static AudioSource EnsureMenuMusicPlaying()
     {
-        GameObject host = GameObject.Find(MusicObjectName);
-        if (host == null)
-        {
-            host = new GameObject(MusicObjectName);
-            Object.DontDestroyOnLoad(host);
-        }
-
-        AudioSource src = host.GetComponent<AudioSource>();
-        if (src == null)
-            src = host.AddComponent<AudioSource>();
+        AudioSource src = EnsureMenuMusicSource();
 
         ApplyMenuMusicSourceSettings(src);
 
@@ -82,7 +74,7 @@ public static class MenuMusicSceneGuard
         {
             if (!src.isPlaying)
                 src.Play();
-            return;
+            return src;
         }
 
         AudioClip resourcesClip = Resources.Load<AudioClip>(ThemeName);
@@ -90,11 +82,36 @@ public static class MenuMusicSceneGuard
         {
             src.clip = resourcesClip;
             src.Play();
-            return;
+            return src;
         }
 
         if (!_loadRoutineActive)
             CoroutineHost.Run(LoadMenuMusicFromDisk(src));
+        return src;
+    }
+
+    public static AudioSource PlayMenuTheme(AudioClip clip)
+    {
+        if (clip == null)
+            return EnsureMenuMusicPlaying();
+
+        AudioSource src = EnsureMenuMusicSource();
+        ApplyMenuMusicSourceSettings(src);
+
+        if (src.clip != null && IsSameThemeClip(src.clip, clip))
+        {
+            if (!src.isPlaying)
+                src.Play();
+            return src;
+        }
+
+        if (src.isPlaying && IsThemeClip(src.clip) && IsThemeClip(clip))
+            return src;
+
+        src.clip = clip;
+        if (!src.isPlaying)
+            src.Play();
+        return src;
     }
 
     private static void ApplyMenuMusicSourceSettings(AudioSource src)
@@ -130,6 +147,12 @@ public static class MenuMusicSceneGuard
                     continue;
 
                 clip.name = ThemeName;
+                if (src.isPlaying && IsThemeClip(src.clip))
+                {
+                    _loadRoutineActive = false;
+                    yield break;
+                }
+
                 src.clip = clip;
                 ApplyMenuMusicSourceSettings(src);
                 if (!src.isPlaying)
@@ -173,7 +196,7 @@ public static class MenuMusicSceneGuard
         return candidates.ToArray();
     }
 
-    private static bool IsMenuScene(string sceneName)
+    public static bool IsMenuSceneName(string sceneName)
     {
         if (string.IsNullOrEmpty(sceneName)) return false;
         string n = sceneName.ToLowerInvariant();
@@ -189,8 +212,15 @@ public static class MenuMusicSceneGuard
             || n.Contains("options") 
             || n.Contains("credits")
             || n.Contains("selectlevel")
+            || n.Contains("select_level")
+            || n.Contains("multiplayer")
             || n.Contains("challenges")
             || n.Contains("prismstore");
+    }
+
+    private static bool IsMenuScene(string sceneName)
+    {
+        return IsMenuSceneName(sceneName);
     }
 
     private static IEnumerator FadeAndStop(AudioSource src, float duration)
@@ -225,12 +255,63 @@ public static class MenuMusicSceneGuard
 #else
         GameObject[] all = Object.FindObjectsOfType<GameObject>();
 #endif
-        GameObject first = null;
+        GameObject first = _instance != null ? _instance.gameObject : null;
         for (int i = 0; i < all.Length; i++)
         {
             if (all[i] == null || all[i].name != MusicObjectName) continue;
             if (first == null) { first = all[i]; continue; }
+            if (first == all[i]) continue;
             Object.Destroy(all[i]);
+        }
+    }
+
+    private static AudioSource EnsureMenuMusicSource()
+    {
+        PruneDuplicateLobbyMusic();
+
+        GameObject host = _instance != null ? _instance.gameObject : GameObject.Find(MusicObjectName);
+        if (host == null)
+            host = new GameObject(MusicObjectName);
+        if (host.name != MusicObjectName)
+            host.name = MusicObjectName;
+
+        MenuMusicSingleton singleton = host.GetComponent<MenuMusicSingleton>();
+        if (singleton == null)
+            singleton = host.AddComponent<MenuMusicSingleton>();
+        if (_instance == null)
+            _instance = singleton;
+
+        AudioSource src = host.GetComponent<AudioSource>();
+        if (src == null)
+            src = host.AddComponent<AudioSource>();
+        return src;
+    }
+
+    private static bool IsSameThemeClip(AudioClip a, AudioClip b)
+    {
+        if (a == null || b == null) return false;
+        if (ReferenceEquals(a, b)) return true;
+        return IsThemeClip(a) && IsThemeClip(b);
+    }
+
+    private static bool IsThemeClip(AudioClip clip)
+    {
+        return clip != null && string.Equals(clip.name, ThemeName, System.StringComparison.OrdinalIgnoreCase);
+    }
+
+    private sealed class MenuMusicSingleton : MonoBehaviour
+    {
+        private void Awake()
+        {
+            if (_instance != null && _instance != this)
+            {
+                Object.Destroy(gameObject);
+                return;
+            }
+
+            _instance = this;
+            gameObject.name = MusicObjectName;
+            Object.DontDestroyOnLoad(gameObject);
         }
     }
 

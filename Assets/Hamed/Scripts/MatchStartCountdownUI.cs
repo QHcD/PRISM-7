@@ -7,6 +7,9 @@ public class MatchStartCountdownUI : MonoBehaviour
 {
     private const float StepHoldSeconds = 0.82f;
     private const float GoHoldSeconds   = 0.72f;
+    private const string CountdownSfxResourcePath = "Audio/3 2 1 go sound effect";
+    private static AudioClip _countdownSfxClip;
+    private static AudioSource _activeCountdownSfxSource;
 
     public static IEnumerator Play()
     {
@@ -30,7 +33,6 @@ public class MatchStartCountdownUI : MonoBehaviour
             Time.timeScale = 0f;
 
         BuildOverlay();
-        VoClipAutoIndex.EnsureLoaded();
 
         string[] steps = { "3", "2", "1", "GO!" };
         for (int i = 0; i < steps.Length; i++)
@@ -39,14 +41,8 @@ public class MatchStartCountdownUI : MonoBehaviour
             if (isGo)
                 HealthManager.ReleaseStartupProtection();
             SetBigText(steps[i], isGo);
-            AudioClip clip = isGo ? VoClipAutoIndex.ResolveCountdownStart() : VoClipAutoIndex.ResolveCountdownBeep();
-            if (clip != null)
-            {
-                if (GameManager.Instance != null)
-                    GameManager.Instance.PlayMatchUiOneShot(clip, 1f);
-                else
-                    PlayFallbackOneShot(clip);
-            }
+            if (i == 0)
+                PlayCountdownSfx();
 
             yield return new WaitForSecondsRealtime(isGo ? GoHoldSeconds : StepHoldSeconds);
         }
@@ -89,7 +85,7 @@ public class MatchStartCountdownUI : MonoBehaviour
         GameObject labelGo = new GameObject("Count");
         labelGo.transform.SetParent(root.transform, false);
         _bigLabel = labelGo.AddComponent<TextMeshProUGUI>();
-        _bigLabel.text = "3";
+        _bigLabel.text = string.Empty;
         _bigLabel.fontSize = 220f;
         _bigLabel.alignment = TextAlignmentOptions.Center;
         PrismaticHudTypography.ApplyCountdownStyle(_bigLabel, false);
@@ -102,15 +98,44 @@ public class MatchStartCountdownUI : MonoBehaviour
         lr.anchoredPosition = Vector2.zero;
     }
 
-    private static void PlayFallbackOneShot(AudioClip clip)
+    private void PlayCountdownSfx()
     {
-        var host = new GameObject("CountdownFallbackAudio");
-        var src  = host.AddComponent<AudioSource>();
-        src.playOnAwake = false;
-        src.spatialBlend = 0f;
+        AudioClip clip = ResolveCountdownSfxClip();
+        if (clip == null)
+            return;
+
+        if (_activeCountdownSfxSource != null && _activeCountdownSfxSource.isPlaying)
+            _activeCountdownSfxSource.Stop();
+
+        AudioSource source = GameManager.Instance != null ? GameManager.Instance.MatchUiAudio : null;
+        if (source == null)
+            source = GetComponent<AudioSource>() ?? gameObject.AddComponent<AudioSource>();
+
+        ConfigureCountdownSource(source);
+        source.clip = clip;
+        source.Stop();
+        source.Play();
+        _activeCountdownSfxSource = source;
+    }
+
+    private static AudioClip ResolveCountdownSfxClip()
+    {
+        if (_countdownSfxClip != null)
+            return _countdownSfxClip;
+
+        _countdownSfxClip = Resources.Load<AudioClip>(CountdownSfxResourcePath);
+        return _countdownSfxClip;
+    }
+
+    private static void ConfigureCountdownSource(AudioSource source)
+    {
+        if (source == null)
+            return;
+
+        source.playOnAwake = false;
+        source.loop = false;
+        source.spatialBlend = 0f;
         if (SessionManager.Instance != null)
-            SessionManager.Instance.ConfigureMatchAudioSource(src, SessionManager.Instance.MatchUiMixerGroupName);
-        src.PlayOneShot(clip, 1f);
-        Destroy(host, clip.length + 0.1f);
+            SessionManager.Instance.ConfigureMatchAudioSource(source, SessionManager.Instance.MatchUiMixerGroupName);
     }
 }

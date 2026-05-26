@@ -1775,49 +1775,13 @@ public class RuntimeMenuBuilder : MonoBehaviour
             return;
         }
 
-        GameObject musicObj = GameObject.Find("LobbyMusic");
-        if (musicObj == null)
-        {
-            musicObj = new GameObject("LobbyMusic");
-            DontDestroyOnLoad(musicObj);
-        }
-
-        lobbyAudioSource = musicObj.GetComponent<AudioSource>();
-        if (lobbyAudioSource == null)
-            lobbyAudioSource = musicObj.AddComponent<AudioSource>();
-
-        if (lobbyAudioSource.isPlaying && lobbyAudioSource.clip == clip)
-        {
-            ApplyLobbyAudioSourceSettings(clip);
-            LogMenuMusicStarted(clip);
-            return;
-        }
-
-        if (lobbyAudioSource.isPlaying)
-            lobbyAudioSource.Stop();
-
-        ApplyLobbyAudioSourceSettings(clip);
-        lobbyAudioSource.Play();
-        LogMenuMusicStarted(clip);
-    }
-
-    void StopLobbyMusic()
-    {
-        GameObject go = GameObject.Find("LobbyMusic");
-        if (go == null)
-            return;
-
-        AudioSource src = go.GetComponent<AudioSource>();
-        if (src != null && src.isPlaying)
-            src.Stop();
-
-        if (lobbyAudioSource != null && lobbyAudioSource.gameObject == go)
-            lobbyAudioSource = src;
+        lobbyAudioSource = MenuMusicSceneGuard.PlayMenuTheme(clip);
+        if (lobbyAudioSource != null && lobbyAudioSource.clip != null)
+            LogMenuMusicStarted(lobbyAudioSource.clip);
     }
 
     void OnDestroy()
     {
-        StopLobbyMusic();
         _lobbyMusicLoadRoutineActive = false;
     }
 

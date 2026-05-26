@@ -1622,6 +1622,8 @@ public class LevelBuilder : MonoBehaviour
 
     private static void EnsureRuntimeWarehouseColliders(Transform root)
     {
+        EnsureSciFiStairRampColliders(root);
+
         MeshFilter[] filters = root.GetComponentsInChildren<MeshFilter>(true);
         for (int i = 0; i < filters.Length; i++)
         {
@@ -1629,7 +1631,6 @@ public class LevelBuilder : MonoBehaviour
             if (mf == null || mf.sharedMesh == null) continue;
             if (IsStairOrRampModule(mf.transform))
             {
-                EnsureSmoothTraversalCollider(mf);
                 continue;
             }
             if (IsLocomotionTraversalModule(mf.transform))
@@ -1640,6 +1641,56 @@ public class LevelBuilder : MonoBehaviour
             if (!IsRuntimeColliderRequiredModule(mf.transform)) continue;
             EnsureMeshOrBoxCollider(mf);
         }
+    }
+
+    private static void EnsureSciFiStairRampColliders(Transform root)
+    {
+        if (root == null) return;
+
+        var stairRoots = new System.Collections.Generic.List<Transform>();
+        MeshFilter[] filters = root.GetComponentsInChildren<MeshFilter>(true);
+        for (int i = 0; i < filters.Length; i++)
+        {
+            MeshFilter mf = filters[i];
+            if (mf == null || mf.sharedMesh == null) continue;
+            Transform stairRoot = FindStairTraversalRoot(mf.transform);
+            if (stairRoot == null) continue;
+            if (!stairRoots.Contains(stairRoot))
+                stairRoots.Add(stairRoot);
+        }
+
+        var rampNames = new System.Text.StringBuilder();
+        int rampCount = 0;
+        for (int i = 0; i < stairRoots.Count; i++)
+        {
+            if (!EnsureSmoothTraversalCollider(stairRoots[i]))
+                continue;
+            if (rampNames.Length > 0)
+                rampNames.Append(", ");
+            rampNames.Append(stairRoots[i].name);
+            rampCount++;
+        }
+
+        if (rampCount > 0)
+            Debug.Log($"[SciFiStairs] smooth stair ramp colliders active={rampCount}: {rampNames}");
+    }
+
+    private static Transform FindStairTraversalRoot(Transform transform)
+    {
+        Transform result = null;
+        for (Transform t = transform; t != null; t = t.parent)
+        {
+            string n = t.name.ToLowerInvariant();
+            if (n == "fbxmap" || n == "scifiarena" || n == "demo warehousemodules")
+                break;
+            if (IsProtectedColliderName(n))
+                break;
+            if (IsDecorativeColliderName(n))
+                continue;
+            if (IsStairTraversalName(n))
+                result = t;
+        }
+        return result;
     }
 
     private static int DisableSciFiDecorativeColliders(Transform root)
@@ -1781,35 +1832,32 @@ public class LevelBuilder : MonoBehaviour
         Physics.BakeMesh(mf.sharedMesh.GetInstanceID(), true);
     }
 
-    private static void EnsureSmoothTraversalCollider(MeshFilter mf)
+    private static bool EnsureSmoothTraversalCollider(Transform stairRoot)
     {
-        if (mf == null || mf.sharedMesh == null) return;
-        if (!TryGetRendererBounds(mf.transform, out Bounds bounds))
-            bounds = mf.GetComponent<Renderer>() != null
-                ? mf.GetComponent<Renderer>().bounds
-                : new Bounds(mf.transform.position, mf.sharedMesh.bounds.size);
+        if (stairRoot == null) return false;
+        if (!TryGetTraversalRendererBounds(stairRoot, out Bounds bounds))
+            return false;
 
         if (bounds.size.x < 0.15f || bounds.size.z < 0.15f)
-        {
-            EnsureMeshOrBoxCollider(mf);
-            return;
-        }
+            return false;
 
-        Collider[] existing = mf.GetComponents<Collider>();
+        Collider[] existing = stairRoot.GetComponentsInChildren<Collider>(true);
         for (int i = 0; i < existing.Length; i++)
         {
             Collider collider = existing[i];
             if (collider == null || collider.isTrigger)
                 continue;
+            if (IsGeneratedTraversalCollider(collider.transform))
+                continue;
             collider.enabled = false;
         }
 
-        Transform holder = mf.transform.Find("SciFiSmoothTraversalCollider");
+        Transform holder = stairRoot.Find("SciFiSmoothTraversalCollider");
         if (holder == null)
         {
             GameObject created = new GameObject("SciFiSmoothTraversalCollider");
             holder = created.transform;
-            holder.SetParent(mf.transform, true);
+            holder.SetParent(stairRoot, true);
         }
 
         int envLayer = LayerMask.NameToLayer("Environment");
@@ -1825,7 +1873,7 @@ public class LevelBuilder : MonoBehaviour
             if (meshColliders[i] != null)
                 DestroyObjectSafe(meshColliders[i]);
 
-        ResolveTraversalRamp(bounds, mf, out Vector3 center, out Quaternion rotation, out Vector3 size);
+        ResolveTraversalRamp(bounds, stairRoot, out Vector3 center, out Quaternion rotation, out Vector3 size);
         holder.position = center;
         holder.rotation = rotation;
         holder.localScale = Vector3.one;
@@ -1833,6 +1881,13 @@ public class LevelBuilder : MonoBehaviour
         ramp.size = size;
         ramp.enabled = true;
         ramp.isTrigger = false;
+        return true;
+    }
+
+    private static void EnsureSmoothTraversalCollider(MeshFilter mf)
+    {
+        if (mf == null) return;
+        EnsureSmoothTraversalCollider(mf.transform);
     }
 
     private static bool TryGetRendererBounds(Transform target, out Bounds bounds)
@@ -1862,7 +1917,37 @@ public class LevelBuilder : MonoBehaviour
         return found;
     }
 
-    private static void ResolveTraversalRamp(Bounds bounds, MeshFilter mf, out Vector3 center, out Quaternion rotation, out Vector3 size)
+    private static bool TryGetTraversalRendererBounds(Transform target, out Bounds bounds)
+    {
+        bounds = default;
+        if (target == null)
+            return false;
+
+        Renderer[] renderers = target.GetComponentsInChildren<Renderer>(true);
+        bool found = false;
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer renderer = renderers[i];
+            if (renderer == null || !renderer.enabled || renderer is ParticleSystemRenderer)
+                continue;
+            if (IsGeneratedTraversalCollider(renderer.transform))
+                continue;
+            if (HasDecorativeTraversalName(renderer.transform) || IsDecorativeColliderModule(renderer.transform))
+                continue;
+
+            if (!found)
+            {
+                bounds = renderer.bounds;
+                found = true;
+            }
+            else
+                bounds.Encapsulate(renderer.bounds);
+        }
+
+        return found;
+    }
+
+    private static void ResolveTraversalRamp(Bounds bounds, Transform stairRoot, out Vector3 center, out Quaternion rotation, out Vector3 size)
     {
         Vector3 axis = bounds.size.x >= bounds.size.z ? Vector3.right : Vector3.forward;
         float run = Mathf.Max(0.45f, Vector3.Scale(bounds.size, new Vector3(Mathf.Abs(axis.x), 0f, Mathf.Abs(axis.z))).magnitude);
@@ -1870,7 +1955,7 @@ public class LevelBuilder : MonoBehaviour
         float lowerY = bounds.min.y + 0.05f;
         float upperY = Mathf.Max(lowerY + 0.08f, bounds.max.y + 0.05f);
 
-        if (TryResolveTraversalSlopeFromMesh(mf, axis, out bool positiveAxisIsUp, out float lowAverageY, out float highAverageY))
+        if (TryResolveTraversalSlopeFromHierarchy(stairRoot, axis, out bool positiveAxisIsUp, out float lowAverageY, out float highAverageY))
         {
             if (!positiveAxisIsUp)
                 axis = -axis;
@@ -1878,19 +1963,89 @@ public class LevelBuilder : MonoBehaviour
             upperY = Mathf.Max(lowerY + 0.08f, highAverageY + 0.05f);
         }
 
-        Vector3 start = bounds.center - axis * (run * 0.5f);
-        Vector3 end = bounds.center + axis * (run * 0.5f);
-        start.y = lowerY;
-        end.y = upperY;
+        const float LandingOverlap = 0.9f;
+        Vector3 start = bounds.center - axis * (run * 0.5f + LandingOverlap);
+        Vector3 end = bounds.center + axis * (run * 0.5f + LandingOverlap);
+        start.y = Mathf.Max(bounds.min.y + 0.02f, lowerY);
+        end.y = upperY + 0.08f;
         Vector3 forward = end - start;
         float length = Mathf.Max(0.5f, forward.magnitude);
         forward.Normalize();
 
         center = (start + end) * 0.5f;
         rotation = Quaternion.LookRotation(forward, Vector3.up);
-        float usableWidth = Mathf.Clamp(width * 0.74f, 0.72f, Mathf.Max(0.72f, width - 0.2f));
-        float thickness = Mathf.Clamp(bounds.size.y * 0.16f, 0.12f, 0.32f);
+        float usableWidth = Mathf.Clamp(width * 0.82f, 1.05f, Mathf.Max(1.05f, width - 0.25f));
+        float thickness = Mathf.Clamp(bounds.size.y * 0.18f, 0.22f, 0.42f);
         size = new Vector3(usableWidth, thickness, length);
+    }
+
+    private static bool TryResolveTraversalSlopeFromHierarchy(Transform root, Vector3 axis, out bool positiveAxisIsUp, out float lowAverageY, out float highAverageY)
+    {
+        positiveAxisIsUp = true;
+        lowAverageY = 0f;
+        highAverageY = 0f;
+        if (root == null)
+            return false;
+
+        MeshFilter[] filters = root.GetComponentsInChildren<MeshFilter>(true);
+        float minProjection = float.PositiveInfinity;
+        float maxProjection = float.NegativeInfinity;
+        var points = new System.Collections.Generic.List<Vector3>(128);
+        for (int i = 0; i < filters.Length; i++)
+        {
+            MeshFilter mf = filters[i];
+            if (mf == null || mf.sharedMesh == null || !mf.sharedMesh.isReadable)
+                continue;
+            if (HasDecorativeTraversalName(mf.transform) || IsDecorativeColliderModule(mf.transform))
+                continue;
+
+            Vector3[] vertices = mf.sharedMesh.vertices;
+            if (vertices == null || vertices.Length < 4)
+                continue;
+            for (int v = 0; v < vertices.Length; v++)
+            {
+                Vector3 world = mf.transform.TransformPoint(vertices[v]);
+                points.Add(world);
+                float projection = Vector3.Dot(world, axis);
+                minProjection = Mathf.Min(minProjection, projection);
+                maxProjection = Mathf.Max(maxProjection, projection);
+            }
+        }
+
+        float span = maxProjection - minProjection;
+        if (points.Count < 4 || span < 0.2f)
+            return false;
+
+        float lowEdge = minProjection + span * 0.25f;
+        float highEdge = maxProjection - span * 0.25f;
+        float lowSum = 0f;
+        float highSum = 0f;
+        int lowCount = 0;
+        int highCount = 0;
+        for (int i = 0; i < points.Count; i++)
+        {
+            float projection = Vector3.Dot(points[i], axis);
+            if (projection <= lowEdge)
+            {
+                lowSum += points[i].y;
+                lowCount++;
+            }
+            else if (projection >= highEdge)
+            {
+                highSum += points[i].y;
+                highCount++;
+            }
+        }
+
+        if (lowCount == 0 || highCount == 0)
+            return false;
+
+        float lowEndY = lowSum / lowCount;
+        float highEndY = highSum / highCount;
+        positiveAxisIsUp = highEndY >= lowEndY;
+        lowAverageY = Mathf.Min(lowEndY, highEndY);
+        highAverageY = Mathf.Max(lowEndY, highEndY);
+        return Mathf.Abs(highEndY - lowEndY) > 0.04f;
     }
 
     private static bool TryResolveTraversalSlopeFromMesh(MeshFilter mf, Vector3 axis, out bool positiveAxisIsUp, out float lowAverageY, out float highAverageY)
@@ -2019,8 +2174,12 @@ public class LevelBuilder : MonoBehaviour
     {
         if (mf == null)
             return false;
-        if (IsStairOrRampModule(mf.transform) && HasActiveSmoothTraversalCollider(mf.transform))
-            return true;
+        if (IsStairOrRampModule(mf.transform))
+        {
+            Transform stairRoot = FindStairTraversalRoot(mf.transform);
+            if (HasActiveSmoothTraversalCollider(stairRoot != null ? stairRoot : mf.transform))
+                return true;
+        }
         return HasActiveMeshOrBoxCollider(mf.gameObject);
     }
 
@@ -2055,6 +2214,9 @@ public class LevelBuilder : MonoBehaviour
 
     private static bool IsLocomotionTraversalModule(Transform transform)
     {
+        if (HasDecorativeTraversalName(transform))
+            return false;
+
         for (Transform t = transform; t != null; t = t.parent)
         {
             string n = t.name.ToLowerInvariant();
@@ -2067,6 +2229,9 @@ public class LevelBuilder : MonoBehaviour
 
     private static bool IsStairOrRampModule(Transform transform)
     {
+        if (HasDecorativeTraversalName(transform))
+            return false;
+
         for (Transform t = transform; t != null; t = t.parent)
         {
             string n = t.name.ToLowerInvariant();
@@ -2078,32 +2243,110 @@ public class LevelBuilder : MonoBehaviour
 
     private static bool IsDecorativeColliderModule(Transform transform)
     {
+        if (transform == null)
+            return false;
+
+        string selfName = transform.name.ToLowerInvariant();
+        if (IsProtectedColliderName(selfName))
+            return false;
+        if (IsDecorativeColliderName(selfName))
+            return true;
+
         for (Transform t = transform; t != null; t = t.parent)
         {
             string n = t.name.ToLowerInvariant();
-            if (n.Contains("door") || n.Contains("trigger") || n.Contains("navmeshproxy"))
+            if (IsProtectedColliderName(n))
                 return false;
-            if (n.Contains("floor") || n.Contains("wall") || n.Contains("stair")
-                || n.Contains("step") || n.Contains("ramp") || n.Contains("walkway")
-                || n.Contains("catwalk") || n.Contains("platform"))
-                return false;
-            if (n.Contains("rail") || n.Contains("railing") || n.Contains("pipe")
-                || n.Contains("cable") || n.Contains("duct") || n.Contains("vent")
-                || n.Contains("light") || n.Contains("beam") || n.Contains("shelf")
-                || n.Contains("crate") || n.Contains("barrel") || n.Contains("pallet")
-                || n.Contains("sprinkler") || n.Contains("camera") || n.Contains("sign")
-                || n.Contains("panel") || n.Contains("fuse") || n.Contains("cart")
-                || n.Contains("bin") || n.Contains("ext"))
+            if (t != transform && IsDecorativeColliderName(n))
                 return true;
+            if (IsStructuralColliderName(n))
+                return false;
         }
         return false;
+    }
+
+    private static bool HasDecorativeTraversalName(Transform transform)
+    {
+        for (Transform t = transform; t != null; t = t.parent)
+        {
+            string n = t.name.ToLowerInvariant();
+            if (IsProtectedColliderName(n))
+                return false;
+            if (n.Contains("rail") || n.Contains("railing") || n.Contains("guard")
+                || n.Contains("trim") || n.Contains("pipe") || n.Contains("cable")
+                || n.Contains("duct") || n.Contains("vent") || n.Contains("light")
+                || n.Contains("beam") || n.Contains("support") || n.Contains("pillar")
+                || n.Contains("wall") || n.Contains("fence") || n.Contains("panel"))
+                return true;
+            if (IsStairTraversalName(n))
+                return false;
+        }
+        return false;
+    }
+
+    private static bool IsStairTraversalName(string lowerName)
+    {
+        return lowerName.Contains("stair")
+            || lowerName.Contains("stairs")
+            || lowerName.Contains("staircase")
+            || lowerName.Contains("step")
+            || lowerName.Contains("steps")
+            || lowerName.Contains("catwalk steps")
+            || lowerName.Contains("ramp");
+    }
+
+    private static bool IsProtectedColliderName(string lowerName)
+    {
+        return lowerName.Contains("door")
+            || lowerName.Contains("trigger")
+            || lowerName.Contains("navmeshproxy")
+            || lowerName.Contains("scifismoothtraversalcollider");
+    }
+
+    private static bool IsStructuralColliderName(string lowerName)
+    {
+        return lowerName.Contains("floor")
+            || lowerName.Contains("ground")
+            || lowerName.Contains("wall")
+            || lowerName.Contains("stair")
+            || lowerName.Contains("step")
+            || lowerName.Contains("ramp")
+            || lowerName.Contains("walkway")
+            || lowerName.Contains("catwalk")
+            || lowerName.Contains("platform")
+            || lowerName.Contains("column")
+            || lowerName.Contains("pillar");
+    }
+
+    private static bool IsDecorativeColliderName(string lowerName)
+    {
+        return lowerName.Contains("rail")
+            || lowerName.Contains("railing")
+            || lowerName.Contains("guard")
+            || lowerName.Contains("trim")
+            || lowerName.Contains("pipe")
+            || lowerName.Contains("cable")
+            || lowerName.Contains("duct")
+            || lowerName.Contains("vent")
+            || lowerName.Contains("light")
+            || lowerName.Contains("beam")
+            || lowerName.Contains("shelf")
+            || lowerName.Contains("crate")
+            || lowerName.Contains("barrel")
+            || lowerName.Contains("pallet")
+            || lowerName.Contains("sprinkler")
+            || lowerName.Contains("camera")
+            || lowerName.Contains("sign")
+            || lowerName.Contains("panel")
+            || lowerName.Contains("fuse")
+            || lowerName.Contains("cart")
+            || lowerName.Contains("bin")
+            || lowerName.Contains("ext");
     }
 
     private static bool IsOversizedSciFiBlockerCollider(Collider collider)
     {
         if (collider == null || collider.isTrigger)
-            return false;
-        if (IsRuntimeColliderRequiredModule(collider.transform))
             return false;
         if (IsSciFiNavMeshProxy(collider.transform))
             return false;
@@ -2112,6 +2355,12 @@ public class LevelBuilder : MonoBehaviour
 
         BoxCollider box = collider as BoxCollider;
         if (box == null)
+            return false;
+        bool broadEmptyParent = box.transform.childCount > 0
+            && Mathf.Max(box.bounds.size.x, box.bounds.size.z) > 2.5f
+            && box.transform.GetComponent<MeshFilter>() == null
+            && box.transform.GetComponent<Renderer>() == null;
+        if (IsRuntimeColliderRequiredModule(collider.transform) && !broadEmptyParent)
             return false;
 
         Renderer[] renderers = box.GetComponentsInChildren<Renderer>(true);
@@ -2142,10 +2391,7 @@ public class LevelBuilder : MonoBehaviour
         Bounds colliderBounds = box.bounds;
         bool tooWide = colliderBounds.size.x > visual.size.x + 1.25f
             || colliderBounds.size.z > visual.size.z + 1.25f;
-        bool broadParent = box.transform.childCount > 0
-            && Mathf.Max(colliderBounds.size.x, colliderBounds.size.z) > 2.5f
-            && (box.transform.GetComponent<MeshFilter>() == null || box.transform.GetComponent<Renderer>() == null);
-        return tooWide || broadParent;
+        return tooWide || broadEmptyParent;
     }
 
     private static bool IsSciFiNavMeshProxy(Transform transform)
@@ -4085,9 +4331,9 @@ public class LevelBuilder : MonoBehaviour
             controller.radius = Mathf.Min(controller.radius > 0f ? controller.radius : 0.32f, 0.32f);
             controller.height = Mathf.Clamp(controller.height > 0f ? controller.height : 1.82f, 1.72f, 1.88f);
             controller.center = new Vector3(0f, controller.height * 0.5f, 0f);
-            controller.skinWidth = Mathf.Clamp(controller.skinWidth, 0.035f, 0.06f);
-            controller.stepOffset = Mathf.Clamp(controller.stepOffset, 0.28f, 0.42f);
-            controller.slopeLimit = Mathf.Clamp(controller.slopeLimit, 45f, 55f);
+            controller.skinWidth = Mathf.Clamp(controller.skinWidth, 0.04f, 0.07f);
+            controller.stepOffset = Mathf.Clamp(controller.stepOffset, 0.45f, 0.58f);
+            controller.slopeLimit = Mathf.Clamp(controller.slopeLimit, 55f, 65f);
         }
 
         CapsuleCollider[] capsules = playerController.GetComponentsInChildren<CapsuleCollider>(true);

@@ -4067,6 +4067,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         }
 
         ForceWeaponRenderable(equippedWeaponObject);
+        EnsureEnemyWeaponVisibleWorldSize(equippedWeaponObject, desiredWorldSize);
         LogWeaponRestoreState("enemy", equippedWeaponObject, weaponPrefab);
 
         Debug.Log($"[EnemyController] '{name}' lvl={level} weapon → hand '{handBone.name}' " +
@@ -4148,6 +4149,58 @@ public class EnemyController : MonoBehaviour, IDamageable
             renderer.enabled = true;
             renderer.forceRenderingOff = false;
         }
+    }
+
+    private static void EnsureEnemyWeaponVisibleWorldSize(GameObject weapon, float targetSize)
+    {
+        if (weapon == null) return;
+
+        float currentWorldSize = GetVisibleWorldSize(weapon);
+        float minimumWorldSize = Mathf.Clamp(Mathf.Max(0.01f, targetSize) * 0.75f, 0.22f, 1.0f);
+        if (currentWorldSize > 0.001f && currentWorldSize < minimumWorldSize)
+        {
+            float scaleUp = minimumWorldSize / currentWorldSize;
+            weapon.transform.localScale *= scaleUp;
+            return;
+        }
+
+        if (currentWorldSize <= 0.001f)
+        {
+            Vector3 scale = weapon.transform.localScale;
+            float fallback = Mathf.Max(scale.x, Mathf.Max(scale.y, scale.z));
+            weapon.transform.localScale = Vector3.one * Mathf.Max(1f, fallback);
+        }
+    }
+
+    private static float GetVisibleWorldSize(GameObject weapon)
+    {
+        if (weapon == null) return 0f;
+
+        Renderer[] renderers = weapon.GetComponentsInChildren<Renderer>(true);
+        bool hasBounds = false;
+        Bounds bounds = default;
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer renderer = renderers[i];
+            if (renderer == null || !renderer.enabled || renderer.forceRenderingOff)
+                continue;
+
+            if (!hasBounds)
+            {
+                bounds = renderer.bounds;
+                hasBounds = true;
+            }
+            else
+            {
+                bounds.Encapsulate(renderer.bounds);
+            }
+        }
+
+        if (!hasBounds)
+            return 0f;
+
+        Vector3 size = bounds.size;
+        return Mathf.Max(size.x, Mathf.Max(size.y, size.z));
     }
 
     private static void LogWeaponRestoreState(string actor, GameObject weapon, GameObject prefab)

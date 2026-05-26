@@ -11,14 +11,21 @@ using UnityEngine.UI;
 /// </summary>
 public class WinScreenCelebration : MonoBehaviour
 {
+    private const string VictorySoundResourcePath = "Audio/Victory_Sound";
+    private const float DuplicateSoundGuardSeconds = 1.0f;
+
     [SerializeField] private RectTransform titleRect;
     [SerializeField] private TextMeshProUGUI bannerTmp;
     [SerializeField] private int confettiCount = 42;
+    [SerializeField] private AudioClip victorySoundClip;
 
     private readonly List<RectTransform> _confetti = new List<RectTransform>();
+    private static AudioClip _cachedVictorySoundClip;
+    private static float _lastVictorySoundRealtime = -999f;
     private Vector3 _titleBaseScale = Vector3.one;
     private float _time;
     private bool _titleIntroDone;
+    private bool _victorySoundPlayed;
 
     public void Configure(RectTransform title, TextMeshProUGUI banner, Transform canvasRoot)
     {
@@ -27,7 +34,56 @@ public class WinScreenCelebration : MonoBehaviour
         _titleIntroDone = false;
         _titleBaseScale = title != null ? title.localScale : Vector3.one;
         BuildConfetti(canvasRoot);
+        PlayVictorySoundOnce();
         StartCoroutine(PunchTitleIn());
+    }
+
+    private void PlayVictorySoundOnce()
+    {
+        if (!Application.isPlaying || _victorySoundPlayed)
+            return;
+
+        float now = Time.realtimeSinceStartup;
+        if (now - _lastVictorySoundRealtime < DuplicateSoundGuardSeconds)
+            return;
+
+        AudioClip clip = ResolveVictorySoundClip();
+        if (clip == null)
+            return;
+
+        AudioSource source = ResolveVictoryAudioSource();
+        if (source == null)
+            return;
+
+        _victorySoundPlayed = true;
+        _lastVictorySoundRealtime = now;
+        source.PlayOneShot(clip, AudioSettingsRuntime.ScaledSfx(1f));
+    }
+
+    private AudioClip ResolveVictorySoundClip()
+    {
+        if (victorySoundClip != null)
+            return victorySoundClip;
+
+        if (_cachedVictorySoundClip == null)
+            _cachedVictorySoundClip = Resources.Load<AudioClip>(VictorySoundResourcePath);
+
+        return _cachedVictorySoundClip;
+    }
+
+    private AudioSource ResolveVictoryAudioSource()
+    {
+        AudioSource source = GameManager.Instance != null ? GameManager.Instance.MatchUiAudio : null;
+        if (source == null)
+            source = GetComponent<AudioSource>() ?? gameObject.AddComponent<AudioSource>();
+
+        source.playOnAwake = false;
+        source.loop = false;
+        source.spatialBlend = 0f;
+        if (SessionManager.Instance != null)
+            SessionManager.Instance.ConfigureMatchAudioSource(source, SessionManager.Instance.MatchUiMixerGroupName);
+
+        return source;
     }
 
     private void BuildConfetti(Transform canvasRoot)

@@ -141,6 +141,7 @@ public class CameraController : MonoBehaviour
     private Vector3   _positionVelocity;
     private float     _fieldOfViewVelocity;
     private bool      _closeSpaceActive;
+    private const float SafeNearClipPlane = 0.06f;
 
     // ════════════════════════════════════════════════════════════════════════
     //  LIFECYCLE
@@ -311,23 +312,20 @@ public class CameraController : MonoBehaviour
         Camera cam = GetComponent<Camera>();
         if (cam != null)
         {
-            cam.nearClipPlane = 0.08f;
+            cam.nearClipPlane = SafeNearClipPlane;
             cam.useOcclusionCulling = false;
             cam.enabled = true;
             defaultFieldOfView = cam.fieldOfView;
         }
 
         _currentDistance = GetCurrentOffset().magnitude;
-        collisionMask = BuildSolidCameraMask();
+        RefreshSolidCollisionMask();
 
         ResolvePlayerTarget();
         ScrubOrphanCameras();
 
         if (target != null)
-        {
-            collisionMask &= ~(1 << target.gameObject.layer);
             SnapToTarget();
-        }
 
         if (isActiveAndEnabled)
             StartCoroutine(FrameEndAuthoritativeSnap());
@@ -355,6 +353,8 @@ public class CameraController : MonoBehaviour
             if (target == null)
                 return;
         }
+        RefreshSolidCollisionMask();
+        EnforceCameraClipPlane();
 
         // ── Defensive pitch clamp ────────────────────────────────────────────
         // PlayerController writes `pitch` directly each frame; clamp it here
@@ -507,6 +507,7 @@ public class CameraController : MonoBehaviour
         if (_closeSpaceActive)
             resolved += Vector3.up * closeSpaceHeightBoost;
 
+        resolved = PreventInsideGeometry(resolved, castOrigin, castDir);
         return EnforceGroundFloor(resolved);
     }
 
@@ -541,6 +542,8 @@ public class CameraController : MonoBehaviour
             // colliders that happen to live on Default but belong to the rig.
             if (target != null && col.transform.IsChildOf(target))
                 continue;
+            if (IsExcludedCameraCollider(col))
+                continue;
 
             float clamped = Mathf.Max(hits[i].distance - wallPadding, minDistance);
             if (clamped < nearest)
@@ -554,6 +557,57 @@ public class CameraController : MonoBehaviour
             Debug.Log($"[CameraCollision] blocker={blocker.name} layer={LayerMask.LayerToName(blocker.gameObject.layer)} dist={nearest:F2}");
 
         return nearest;
+    }
+
+    private Vector3 PreventInsideGeometry(Vector3 candidate, Vector3 castOrigin, Vector3 castDir)
+    {
+        Collider[] overlaps = Physics.OverlapSphere(
+            candidate,
+            collisionRadius,
+            collisionMask,
+            QueryTriggerInteraction.Ignore);
+
+        bool insideSolid = false;
+        for (int i = 0; i < overlaps.Length; i++)
+        {
+            Collider col = overlaps[i];
+            if (col == null)
+                continue;
+            if (target != null && col.transform.IsChildOf(target))
+                continue;
+            if (IsExcludedCameraCollider(col))
+                continue;
+
+            insideSolid = true;
+            break;
+        }
+
+        if (!insideSolid)
+            return candidate;
+
+        float candidateDistance = Vector3.Distance(castOrigin, candidate);
+        float safeDistance = FindNearestCollisionDistance(
+            castOrigin,
+            castDir,
+            Mathf.Max(candidateDistance, minDistance) + wallPadding + collisionRadius);
+        _currentDistance = Mathf.Min(_currentDistance, safeDistance);
+        return castOrigin + castDir * safeDistance;
+    }
+
+    private bool IsExcludedCameraCollider(Collider col)
+    {
+        if (col == null)
+            return true;
+
+        int layer = col.gameObject.layer;
+        return LayerMatches(layer, "Player")
+            || LayerMatches(layer, "Character")
+            || LayerMatches(layer, "Enemy")
+            || LayerMatches(layer, "Enemies")
+            || LayerMatches(layer, "Hittable")
+            || LayerMatches(layer, "UI")
+            || LayerMatches(layer, "TransparentFX")
+            || LayerMatches(layer, "Ignore Raycast");
     }
 
     /// <summary>
@@ -655,8 +709,7 @@ public class CameraController : MonoBehaviour
         _fieldOfViewVelocity = 0f;
         _closeSpaceActive = false;
         _currentDistance = GetCurrentOffset().magnitude;
-        collisionMask = BuildSolidCameraMask();
-        collisionMask &= ~(1 << target.gameObject.layer);
+        RefreshSolidCollisionMask();
         SnapToTarget();
     }
 
@@ -664,6 +717,8 @@ public class CameraController : MonoBehaviour
     public void SnapToTarget()
     {
         if (target == null) return;
+        RefreshSolidCollisionMask();
+        EnforceCameraClipPlane();
 
         _lookTargetInitialized = false;
         Vector3 lookTarget = GetLookTarget();
@@ -722,6 +777,8 @@ public class CameraController : MonoBehaviour
     {
         Camera cam = GetComponent<Camera>();
         if (cam == null) return;
+        if (cam.nearClipPlane > SafeNearClipPlane || cam.nearClipPlane < 0.05f)
+            cam.nearClipPlane = SafeNearClipPlane;
 
         float targetFov = _closeSpaceActive ? closeSpaceFieldOfView : defaultFieldOfView;
         cam.fieldOfView = immediate
@@ -770,6 +827,20 @@ public class CameraController : MonoBehaviour
         return mask;
     }
 
+    private void RefreshSolidCollisionMask()
+    {
+        collisionMask = BuildSolidCameraMask();
+        if (target != null)
+            collisionMask &= ~(1 << target.gameObject.layer);
+    }
+
+    private void EnforceCameraClipPlane()
+    {
+        Camera cam = GetComponent<Camera>();
+        if (cam != null && (cam.nearClipPlane > SafeNearClipPlane || cam.nearClipPlane < 0.05f))
+            cam.nearClipPlane = SafeNearClipPlane;
+    }
+
     private static void RemoveLayerIfExists(ref int mask, string layerName)
     {
         int layer = LayerMask.NameToLayer(layerName);
@@ -787,6 +858,10 @@ public class CameraController : MonoBehaviour
             || LayerMatches(layer, "Terrain")
             || LayerMatches(layer, "Wall")
             || LayerMatches(layer, "Walls")
+            || LayerMatches(layer, "Door")
+            || LayerMatches(layer, "Doors")
+            || LayerMatches(layer, "Obstacle")
+            || LayerMatches(layer, "StaticObstacle")
             || LayerMatches(layer, "Prop")
             || LayerMatches(layer, "Props")
             || LayerMatches(layer, "Building")

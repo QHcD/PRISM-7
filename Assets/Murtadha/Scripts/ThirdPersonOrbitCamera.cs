@@ -169,6 +169,10 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
     // Cached component
     private Camera _cam;
     private Coroutine _frameZeroBindRoutine;
+    private const float SafeNearClipPlane = 0.06f;
+    private const float AbsoluteCollisionMinDistance = 0.08f;
+    private const float MinimumWallPadding = 0.50f;
+    private const float MinimumCollisionRadius = 0.42f;
 
     // ─────────────────────────────────────────────────────────────────────────
     // PROPERTIES  (read by PlayerController for camera-relative movement)
@@ -257,8 +261,9 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
         }
 
         collisionMask = BuildCollisionMask();
+        EnforceCollisionSafetySettings();
 
-        _cam.nearClipPlane = 0.08f;
+        _cam.nearClipPlane = SafeNearClipPlane;
 
         if (target != null)
         {
@@ -366,6 +371,7 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
             if (target == null)
                 return;
         }
+        EnforceCollisionSafetySettings();
 
         UpdateSmoothedPivot();
 
@@ -376,6 +382,8 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
         Vector3 finalPos = enableCollision
             ? ResolveCollision(_smoothedPivot, desiredPos)
             : desiredPos;
+        if (enableCollision)
+            finalPos = ContainCameraOutsideWalls(finalPos, _smoothedPivot);
 
         // Step 5: Apply position and orientation
         transform.position = finalPos;
@@ -516,19 +524,27 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
             ? collisionPullInTime               // pulling in — fast
             : distanceSmoothTime;               // backing out — gradual
 
-        _currentDistance = Mathf.SmoothDamp(
+        float smoothedDistance = Mathf.SmoothDamp(
             _currentDistance,
             safeDist,
             ref _distanceVelocity,
             Mathf.Max(0.001f, smoothTime));
 
-        _currentDistance = Mathf.Max(_currentDistance, minDistance);
+        if (safeDist < _currentDistance)
+            smoothedDistance = Mathf.Min(smoothedDistance, safeDist);
+
+        float minimumAllowedDistance = safeDist < minDistance
+            ? Mathf.Max(AbsoluteCollisionMinDistance, Mathf.Min(safeDist, minDistance))
+            : minDistance;
+        _currentDistance = Mathf.Clamp(smoothedDistance, minimumAllowedDistance, defaultDistance);
 
         // Debug visualisation — draws a green line in the Scene view while active.
         if (debugDrawCollision)
             Debug.DrawLine(pivot, pivot + castDir * _currentDistance, Color.green);
 
-        return pivot + castDir * _currentDistance;
+        Vector3 candidate = pivot + castDir * _currentDistance;
+        candidate = PreventInsideSolidGeometry(candidate, pivot, castDir);
+        return candidate;
     }
 
     private float FindSafeDistance(Vector3 origin, Vector3 direction, float maxDist)
@@ -547,16 +563,80 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
 
         for (int i = 0; i < hits.Length; i++)
         {
+            Collider col = hits[i].collider;
+            if (col == null)
+                continue;
             // Ignore any collider that belongs to the player hierarchy.
-            if (target != null && hits[i].collider.transform.IsChildOf(target))
+            if (target != null && col.transform.IsChildOf(target))
+                continue;
+            if (IsExcludedCollisionCollider(col))
                 continue;
 
-            float paddedDist = Mathf.Max(hits[i].distance - wallPadding, minDistance);
+            float paddedDist = Mathf.Max(hits[i].distance - GetEffectiveWallPadding(), AbsoluteCollisionMinDistance);
             if (paddedDist < nearest)
                 nearest = paddedDist;
         }
 
         return nearest;
+    }
+
+    private Vector3 PreventInsideSolidGeometry(Vector3 candidate, Vector3 pivot, Vector3 direction)
+    {
+        if (!HasSolidOverlap(candidate, GetContainmentRadius()))
+            return candidate;
+
+        float currentDist = Vector3.Distance(pivot, candidate);
+        float safeDist = FindSafeDistance(
+            pivot,
+            direction,
+            Mathf.Max(currentDist + collisionRadius + GetEffectiveWallPadding(), minDistance));
+
+        _distanceVelocity = 0f;
+        _currentDistance = Mathf.Min(_currentDistance, safeDist);
+        return pivot + direction * Mathf.Max(AbsoluteCollisionMinDistance, safeDist);
+    }
+
+    private Vector3 ContainCameraOutsideWalls(Vector3 candidate, Vector3 pivot)
+    {
+        Vector3 fromPivot = candidate - pivot;
+        float distance = fromPivot.magnitude;
+        if (distance <= AbsoluteCollisionMinDistance)
+            return candidate;
+
+        Vector3 direction = fromPivot / distance;
+        float radius = GetContainmentRadius();
+        for (int i = 0; i < 8 && HasSolidOverlap(candidate, radius); i++)
+        {
+            distance = Mathf.Max(AbsoluteCollisionMinDistance, distance - (radius * 0.5f));
+            candidate = pivot + direction * distance;
+            _currentDistance = Mathf.Min(_currentDistance, distance);
+            _distanceVelocity = 0f;
+        }
+
+        return candidate;
+    }
+
+    private bool HasSolidOverlap(Vector3 center, float radius)
+    {
+        Collider[] overlaps = Physics.OverlapSphere(
+            center,
+            radius,
+            collisionMask,
+            QueryTriggerInteraction.Ignore);
+
+        for (int i = 0; i < overlaps.Length; i++)
+        {
+            Collider col = overlaps[i];
+            if (col == null)
+                continue;
+            if (target != null && col.transform.IsChildOf(target))
+                continue;
+            if (IsExcludedCollisionCollider(col))
+                continue;
+            return true;
+        }
+
+        return false;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -595,13 +675,14 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
         _smoothedPivot = _physicsPivot;
         _pivotInitialized = true;
         collisionMask = BuildCollisionMask();
+        EnforceCollisionSafetySettings();
 
         if (_cam == null)
             _cam = GetComponent<Camera>();
         if (_cam != null)
         {
             _cam.enabled = true;
-            _cam.nearClipPlane = 0.08f;
+            _cam.nearClipPlane = SafeNearClipPlane;
             if (!_cam.gameObject.CompareTag("MainCamera"))
                 _cam.gameObject.tag = "MainCamera";
         }
@@ -635,7 +716,9 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
         float safeDist = enableCollision
             ? FindSafeDistance(pivot, castDir, desiredDist)
             : desiredDist;
-        _currentDistance = Mathf.Max(safeDist, minDistance);
+        _currentDistance = safeDist < minDistance
+            ? Mathf.Max(AbsoluteCollisionMinDistance, safeDist)
+            : Mathf.Max(safeDist, minDistance);
         return pivot + castDir * _currentDistance;
     }
 
@@ -739,6 +822,50 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
             mask = 1 << 0;
 
         return mask;
+    }
+
+    private void EnforceCollisionSafetySettings()
+    {
+        collisionRadius = Mathf.Max(collisionRadius, MinimumCollisionRadius);
+        wallPadding = Mathf.Max(wallPadding, MinimumWallPadding);
+        if (_cam == null)
+            _cam = GetComponent<Camera>();
+        if (_cam != null && (_cam.nearClipPlane < 0.05f || _cam.nearClipPlane > SafeNearClipPlane))
+            _cam.nearClipPlane = SafeNearClipPlane;
+    }
+
+    private float GetEffectiveWallPadding()
+    {
+        float nearClip = _cam != null ? _cam.nearClipPlane : SafeNearClipPlane;
+        return Mathf.Max(wallPadding, nearClip + 0.44f);
+    }
+
+    private float GetContainmentRadius()
+    {
+        float nearClip = _cam != null ? _cam.nearClipPlane : SafeNearClipPlane;
+        return Mathf.Max(collisionRadius, nearClip + wallPadding);
+    }
+
+    private bool IsExcludedCollisionCollider(Collider col)
+    {
+        if (col == null)
+            return true;
+
+        int layer = col.gameObject.layer;
+        return LayerMatches(layer, "Player")
+            || LayerMatches(layer, "Character")
+            || LayerMatches(layer, "Enemy")
+            || LayerMatches(layer, "Enemies")
+            || LayerMatches(layer, "Hittable")
+            || LayerMatches(layer, "UI")
+            || LayerMatches(layer, "TransparentFX")
+            || LayerMatches(layer, "Ignore Raycast");
+    }
+
+    private static bool LayerMatches(int layer, string name)
+    {
+        int namedLayer = LayerMask.NameToLayer(name);
+        return namedLayer >= 0 && layer == namedLayer;
     }
 
     private static void AddLayer(ref int mask, string name)

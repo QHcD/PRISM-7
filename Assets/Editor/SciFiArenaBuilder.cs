@@ -26,7 +26,7 @@ public static class SciFiArenaBuilder
     private const string VersionFile = OutputDir + "/.builder_version";
 
     // Bump when layout/content meaningfully changes — forces auto-rebuild.
-    private const int BuilderVersion = 25;
+    private const int BuilderVersion = 27;
 
     private const float ModuleSize = 6f;
     private const int GridSize = 9;            // 54m x 54m arena
@@ -993,15 +993,12 @@ public static class SciFiArenaBuilder
 
         string objectName = renderer.name.ToLowerInvariant();
         bool underFloorTiles = false;
-        bool underCatwalks = false;
         bool underCorridors = false;
         for (Transform t = renderer.transform; t != null; t = t.parent)
         {
             string n = t.name.ToLowerInvariant();
             if (n == "floor tiles" || n == "floors & floor props")
                 underFloorTiles = true;
-            if (n.Contains("catwalk"))
-                underCatwalks = true;
             if (n == "corridors")
                 underCorridors = true;
 
@@ -1019,12 +1016,6 @@ public static class SciFiArenaBuilder
         if (underFloorTiles && (objectName.Contains("floor") || objectName.Contains("ground")))
             return true;
 
-        if (underCatwalks && !objectName.Contains("rail") && !objectName.Contains("pillar")
-            && (objectName.Contains("catwalk") || objectName.Contains("walkway")
-                || objectName.Contains("stair") || objectName.Contains("step")
-                || objectName.Contains("platform")))
-            return true;
-
         if (underCorridors && (objectName.Contains("floor") || objectName.Contains("ground")
             || objectName.Contains("corridor") || objectName.Contains("stair")
             || objectName.Contains("step") || objectName.Contains("platform")))
@@ -1032,7 +1023,7 @@ public static class SciFiArenaBuilder
 
         Bounds b = renderer.bounds;
         float horizontal = Mathf.Max(b.size.x, b.size.z);
-        return (underFloorTiles || underCatwalks || underCorridors)
+        return (underFloorTiles || underCorridors)
             && b.center.y <= 6.5f
             && horizontal >= 2.5f
             && b.size.y <= Mathf.Max(0.6f, horizontal * 0.08f)

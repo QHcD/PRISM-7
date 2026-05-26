@@ -208,7 +208,7 @@ public class LevelInitialization : MonoBehaviour
 
     private static void StopLobbyMusicForGameplay(string loadedSceneName)
     {
-        if (loadedSceneName == MainMenuSceneName) return;
+        if (MenuMusicSceneGuard.IsMenuSceneName(loadedSceneName)) return;
         GameObject go = GameObject.Find("LobbyMusic");
         if (go == null) return;
         AudioSource src = go.GetComponent<AudioSource>();
