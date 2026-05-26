@@ -383,6 +383,7 @@ public class LevelBuilder : MonoBehaviour
     private void BuildMultiplayerScene()
     {
         UseSharedSciFiEnvironment();
+        ConfigureRuntimeLayerCollision();
         _multiplayerBuildComplete = false;
         try
         {
@@ -394,6 +395,7 @@ public class LevelBuilder : MonoBehaviour
             ClearChildren(arenaRoot);
 
             BuildArena(arenaRoot);
+            AssignNavMeshProxyLayer(arenaRoot);
             if (!useSciFiArena)
                 StabilizeGround(arenaRoot);
             EnsureIndustrialDoorsInteractable(arenaRoot);
@@ -426,6 +428,7 @@ public class LevelBuilder : MonoBehaviour
     private void BuildGameScene()
     {
         UseSharedSciFiEnvironment();
+        ConfigureRuntimeLayerCollision();
         Debug.Log("[LevelBuilder] ===== BUILD START =====");
         if (Application.isPlaying)
         {
@@ -1554,6 +1557,7 @@ public class LevelBuilder : MonoBehaviour
 
         if (useSciFiArena)
         {
+            AssignNavMeshProxyLayer(root);
             int disabledDecorative = DisableSciFiDecorativeColliders(root);
             Debug.Log($"[SciFiFix] disabled decorative colliders count={disabledDecorative}");
             EnsureRuntimeWarehouseColliders(root);
@@ -1570,6 +1574,11 @@ public class LevelBuilder : MonoBehaviour
             Collider col = colliders[i];
             if (col == null) continue;
             if (col.GetComponentInParent<IDamageable>() != null) continue;
+            if (useSciFiArena && IsSuppressedTraversalCollider(col))
+            {
+                col.enabled = false;
+                continue;
+            }
             if (useSciFiArena && IsDecorativeColliderModule(col.transform))
             {
                 col.enabled = false;
@@ -1599,7 +1608,7 @@ public class LevelBuilder : MonoBehaviour
             if (mf == null || mf.sharedMesh == null) continue;
             if (!IsRuntimeColliderRequiredModule(mf.transform)) continue;
             required++;
-            if (!HasActiveMeshOrBoxCollider(mf.gameObject))
+            if (!HasActiveRequiredCollider(mf))
             {
                 Debug.LogError("[LevelBuilder] Required environment collider missing on " + GetHierarchyPath(mf.transform));
                 Physics.SyncTransforms();
@@ -1618,9 +1627,14 @@ public class LevelBuilder : MonoBehaviour
         {
             MeshFilter mf = filters[i];
             if (mf == null || mf.sharedMesh == null) continue;
+            if (IsStairOrRampModule(mf.transform))
+            {
+                EnsureSmoothTraversalCollider(mf);
+                continue;
+            }
             if (IsLocomotionTraversalModule(mf.transform))
             {
-                EnsureConvexMeshCollider(mf);
+                EnsureMeshOrBoxCollider(mf);
                 continue;
             }
             if (!IsRuntimeColliderRequiredModule(mf.transform)) continue;
@@ -1767,6 +1781,177 @@ public class LevelBuilder : MonoBehaviour
         Physics.BakeMesh(mf.sharedMesh.GetInstanceID(), true);
     }
 
+    private static void EnsureSmoothTraversalCollider(MeshFilter mf)
+    {
+        if (mf == null || mf.sharedMesh == null) return;
+        if (!TryGetRendererBounds(mf.transform, out Bounds bounds))
+            bounds = mf.GetComponent<Renderer>() != null
+                ? mf.GetComponent<Renderer>().bounds
+                : new Bounds(mf.transform.position, mf.sharedMesh.bounds.size);
+
+        if (bounds.size.x < 0.15f || bounds.size.z < 0.15f)
+        {
+            EnsureMeshOrBoxCollider(mf);
+            return;
+        }
+
+        Collider[] existing = mf.GetComponents<Collider>();
+        for (int i = 0; i < existing.Length; i++)
+        {
+            Collider collider = existing[i];
+            if (collider == null || collider.isTrigger)
+                continue;
+            collider.enabled = false;
+        }
+
+        Transform holder = mf.transform.Find("SciFiSmoothTraversalCollider");
+        if (holder == null)
+        {
+            GameObject created = new GameObject("SciFiSmoothTraversalCollider");
+            holder = created.transform;
+            holder.SetParent(mf.transform, true);
+        }
+
+        int envLayer = LayerMask.NameToLayer("Environment");
+        if (envLayer >= 0)
+            holder.gameObject.layer = envLayer;
+
+        BoxCollider ramp = holder.GetComponent<BoxCollider>();
+        if (ramp == null)
+            ramp = holder.gameObject.AddComponent<BoxCollider>();
+
+        MeshCollider[] meshColliders = holder.GetComponents<MeshCollider>();
+        for (int i = 0; i < meshColliders.Length; i++)
+            if (meshColliders[i] != null)
+                DestroyObjectSafe(meshColliders[i]);
+
+        ResolveTraversalRamp(bounds, mf, out Vector3 center, out Quaternion rotation, out Vector3 size);
+        holder.position = center;
+        holder.rotation = rotation;
+        holder.localScale = Vector3.one;
+        ramp.center = Vector3.zero;
+        ramp.size = size;
+        ramp.enabled = true;
+        ramp.isTrigger = false;
+    }
+
+    private static bool TryGetRendererBounds(Transform target, out Bounds bounds)
+    {
+        bounds = default;
+        if (target == null)
+            return false;
+
+        Renderer[] renderers = target.GetComponentsInChildren<Renderer>(true);
+        bool found = false;
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer renderer = renderers[i];
+            if (renderer == null || !renderer.enabled || renderer is ParticleSystemRenderer)
+                continue;
+            if (IsGeneratedTraversalCollider(renderer.transform))
+                continue;
+            if (!found)
+            {
+                bounds = renderer.bounds;
+                found = true;
+            }
+            else
+                bounds.Encapsulate(renderer.bounds);
+        }
+
+        return found;
+    }
+
+    private static void ResolveTraversalRamp(Bounds bounds, MeshFilter mf, out Vector3 center, out Quaternion rotation, out Vector3 size)
+    {
+        Vector3 axis = bounds.size.x >= bounds.size.z ? Vector3.right : Vector3.forward;
+        float run = Mathf.Max(0.45f, Vector3.Scale(bounds.size, new Vector3(Mathf.Abs(axis.x), 0f, Mathf.Abs(axis.z))).magnitude);
+        float width = axis == Vector3.right ? bounds.size.z : bounds.size.x;
+        float lowerY = bounds.min.y + 0.05f;
+        float upperY = Mathf.Max(lowerY + 0.08f, bounds.max.y + 0.05f);
+
+        if (TryResolveTraversalSlopeFromMesh(mf, axis, out bool positiveAxisIsUp, out float lowAverageY, out float highAverageY))
+        {
+            if (!positiveAxisIsUp)
+                axis = -axis;
+            lowerY = lowAverageY + 0.05f;
+            upperY = Mathf.Max(lowerY + 0.08f, highAverageY + 0.05f);
+        }
+
+        Vector3 start = bounds.center - axis * (run * 0.5f);
+        Vector3 end = bounds.center + axis * (run * 0.5f);
+        start.y = lowerY;
+        end.y = upperY;
+        Vector3 forward = end - start;
+        float length = Mathf.Max(0.5f, forward.magnitude);
+        forward.Normalize();
+
+        center = (start + end) * 0.5f;
+        rotation = Quaternion.LookRotation(forward, Vector3.up);
+        float usableWidth = Mathf.Clamp(width * 0.74f, 0.72f, Mathf.Max(0.72f, width - 0.2f));
+        float thickness = Mathf.Clamp(bounds.size.y * 0.16f, 0.12f, 0.32f);
+        size = new Vector3(usableWidth, thickness, length);
+    }
+
+    private static bool TryResolveTraversalSlopeFromMesh(MeshFilter mf, Vector3 axis, out bool positiveAxisIsUp, out float lowAverageY, out float highAverageY)
+    {
+        positiveAxisIsUp = true;
+        lowAverageY = 0f;
+        highAverageY = 0f;
+        if (mf == null || mf.sharedMesh == null || !mf.sharedMesh.isReadable)
+            return false;
+
+        Vector3[] vertices = mf.sharedMesh.vertices;
+        if (vertices == null || vertices.Length < 4)
+            return false;
+
+        float minProjection = float.PositiveInfinity;
+        float maxProjection = float.NegativeInfinity;
+        for (int i = 0; i < vertices.Length; i++)
+        {
+            Vector3 world = mf.transform.TransformPoint(vertices[i]);
+            float projection = Vector3.Dot(world, axis);
+            minProjection = Mathf.Min(minProjection, projection);
+            maxProjection = Mathf.Max(maxProjection, projection);
+        }
+
+        float span = maxProjection - minProjection;
+        if (span < 0.2f)
+            return false;
+
+        float lowEdge = minProjection + span * 0.25f;
+        float highEdge = maxProjection - span * 0.25f;
+        float lowSum = 0f;
+        float highSum = 0f;
+        int lowCount = 0;
+        int highCount = 0;
+        for (int i = 0; i < vertices.Length; i++)
+        {
+            Vector3 world = mf.transform.TransformPoint(vertices[i]);
+            float projection = Vector3.Dot(world, axis);
+            if (projection <= lowEdge)
+            {
+                lowSum += world.y;
+                lowCount++;
+            }
+            else if (projection >= highEdge)
+            {
+                highSum += world.y;
+                highCount++;
+            }
+        }
+
+        if (lowCount == 0 || highCount == 0)
+            return false;
+
+        float lowEndY = lowSum / lowCount;
+        float highEndY = highSum / highCount;
+        positiveAxisIsUp = highEndY >= lowEndY;
+        lowAverageY = Mathf.Min(lowEndY, highEndY);
+        highAverageY = Mathf.Max(lowEndY, highEndY);
+        return Mathf.Abs(highEndY - lowEndY) > 0.04f;
+    }
+
     private static void EnsureMeshOrBoxCollider(MeshFilter mf)
     {
         if (mf == null || mf.sharedMesh == null) return;
@@ -1828,6 +2013,28 @@ public class LevelBuilder : MonoBehaviour
             if (col is BoxCollider) return true;
         }
         return false;
+    }
+
+    private static bool HasActiveRequiredCollider(MeshFilter mf)
+    {
+        if (mf == null)
+            return false;
+        if (IsStairOrRampModule(mf.transform) && HasActiveSmoothTraversalCollider(mf.transform))
+            return true;
+        return HasActiveMeshOrBoxCollider(mf.gameObject);
+    }
+
+    private static bool HasActiveSmoothTraversalCollider(Transform root)
+    {
+        if (root == null || !root.gameObject.activeInHierarchy)
+            return false;
+
+        Transform holder = root.Find("SciFiSmoothTraversalCollider");
+        if (holder == null || !holder.gameObject.activeInHierarchy)
+            return false;
+
+        BoxCollider box = holder.GetComponent<BoxCollider>();
+        return box != null && box.enabled && !box.isTrigger && box.size != Vector3.zero;
     }
 
     private static bool IsRuntimeColliderRequiredModule(Transform transform)
@@ -1949,6 +2156,69 @@ public class LevelBuilder : MonoBehaviour
                 return true;
         }
         return false;
+    }
+
+    private static bool IsSuppressedTraversalCollider(Collider collider)
+    {
+        if (collider == null || collider.isTrigger)
+            return false;
+        if (IsGeneratedTraversalCollider(collider.transform))
+            return false;
+        return IsStairOrRampModule(collider.transform);
+    }
+
+    private static bool IsGeneratedTraversalCollider(Transform transform)
+    {
+        for (Transform t = transform; t != null; t = t.parent)
+        {
+            if (t.name == "SciFiSmoothTraversalCollider")
+                return true;
+        }
+        return false;
+    }
+
+    private static void AssignNavMeshProxyLayer(Transform root)
+    {
+        if (root == null)
+            return;
+        int layer = LayerMask.NameToLayer("NavMeshProxy");
+        if (layer < 0)
+            return;
+
+        Transform[] transforms = root.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < transforms.Length; i++)
+        {
+            Transform t = transforms[i];
+            if (t == null)
+                continue;
+            if (IsSciFiNavMeshProxy(t))
+                t.gameObject.layer = layer;
+        }
+    }
+
+    private static void ConfigureRuntimeLayerCollision()
+    {
+        IgnoreCharacterCollisionWith("NavMeshProxy");
+        IgnoreCharacterCollisionWith("DecorativeObstacle");
+        IgnoreCharacterCollisionWith("Ignore Raycast");
+    }
+
+    private static void IgnoreCharacterCollisionWith(string layerName)
+    {
+        int helperLayer = LayerMask.NameToLayer(layerName);
+        if (helperLayer < 0)
+            return;
+
+        IgnoreLayerPair("Player", helperLayer);
+        IgnoreLayerPair("Character", helperLayer);
+        IgnoreLayerPair("Hittable", helperLayer);
+    }
+
+    private static void IgnoreLayerPair(string characterLayerName, int helperLayer)
+    {
+        int characterLayer = LayerMask.NameToLayer(characterLayerName);
+        if (characterLayer >= 0)
+            Physics.IgnoreLayerCollision(characterLayer, helperLayer, true);
     }
 
     private static string GetHierarchyPath(Transform transform)

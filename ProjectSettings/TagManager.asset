@@ -23,8 +23,8 @@ TagManager:
   - Hittable
   - Player
   - Walkable
-  - 
-  - 
+  - DecorativeObstacle
+  - NavMeshProxy
   - 
   - 
   - 

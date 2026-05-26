@@ -638,7 +638,11 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         int targetLayer = LayerMask.NameToLayer("Player");
         if (targetLayer < 0) targetLayer = LayerMask.NameToLayer("Hittable");
         if (targetLayer < 0) targetLayer = LayerMask.NameToLayer("Character");
-        if (targetLayer >= 0) SetLayerRecursive(gameObject, targetLayer);
+        if (targetLayer >= 0)
+        {
+            SetLayerRecursive(gameObject, targetLayer);
+            ConfigurePlayerHelperLayerCollision(targetLayer);
+        }
 
         controller  = GetComponent<CharacterController>();
         audioSource = GetComponent<AudioSource>();
@@ -689,6 +693,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         resolvedAttackMask   = ResolveHittableMask();
         if (staticObstacleMask.value == 0)
             staticObstacleMask = BuildDefaultStaticObstacleMask();
+        else
+            staticObstacleMask = SanitizeStaticObstacleMask(staticObstacleMask);
 
         _cachedGroundMask = BuildGroundCheckMask();
         _groundMaskReady = true;
@@ -1729,6 +1735,39 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         return mask == 0 ? (LayerMask)0 : (LayerMask)mask;
     }
 
+    private static LayerMask SanitizeStaticObstacleMask(LayerMask source)
+    {
+        int mask = source.value;
+        RemoveLayer(ref mask, "Player");
+        RemoveLayer(ref mask, "Character");
+        RemoveLayer(ref mask, "Hittable");
+        RemoveLayer(ref mask, "NavMeshProxy");
+        RemoveLayer(ref mask, "DecorativeObstacle");
+        RemoveLayer(ref mask, "Ignore Raycast");
+        return (LayerMask)mask;
+    }
+
+    private static void ConfigurePlayerHelperLayerCollision(int playerLayer)
+    {
+        IgnorePlayerCollisionWith(playerLayer, "NavMeshProxy");
+        IgnorePlayerCollisionWith(playerLayer, "DecorativeObstacle");
+        IgnorePlayerCollisionWith(playerLayer, "Ignore Raycast");
+    }
+
+    private static void IgnorePlayerCollisionWith(int playerLayer, string layerName)
+    {
+        int helperLayer = LayerMask.NameToLayer(layerName);
+        if (playerLayer >= 0 && helperLayer >= 0)
+            Physics.IgnoreLayerCollision(playerLayer, helperLayer, true);
+    }
+
+    private static void RemoveLayer(ref int mask, string layerName)
+    {
+        int layer = LayerMask.NameToLayer(layerName);
+        if (layer >= 0)
+            mask &= ~(1 << layer);
+    }
+
     private void GetCapsuleWorldEndpoints(out Vector3 bottom, out Vector3 top)
     {
         GetCapsuleWorldEndpoints(transform.position, out bottom, out top);
@@ -2623,6 +2662,9 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (playerLayer    >= 0) mask &= ~(1 << playerLayer);
         if (characterLayer >= 0) mask &= ~(1 << characterLayer);
         if (hittableLayer  >= 0) mask &= ~(1 << hittableLayer);
+        RemoveLayer(ref mask, "NavMeshProxy");
+        RemoveLayer(ref mask, "DecorativeObstacle");
+        RemoveLayer(ref mask, "Ignore Raycast");
         return mask;
     }
 
