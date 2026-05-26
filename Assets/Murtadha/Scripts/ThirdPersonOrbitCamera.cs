@@ -313,7 +313,7 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
 
     private IEnumerator FrameZeroBindRoutine()
     {
-        for (int i = 0; i < 8; i++)
+        for (int i = 0; i < 120; i++)
         {
             if (GameplayCameraBootstrap.TryBindActiveGameplayCamera())
             {
@@ -324,6 +324,12 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
         }
 
         _frameZeroBindRoutine = null;
+    }
+
+    private void OnPreCull()
+    {
+        if (target == null)
+            GameplayCameraBootstrap.TryBindActiveGameplayCamera();
     }
 
     private void OnApplicationFocus(bool hasFocus)

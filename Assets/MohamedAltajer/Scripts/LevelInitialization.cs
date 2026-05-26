@@ -34,13 +34,13 @@ public class LevelInitialization : MonoBehaviour
         StopLobbyMusicForGameplay(scene.name);
         if (scene.name == MainMenuSceneName) return;
         GameplayCameraBootstrap.FlushAllTargetCaches();
-        GameplayCameraBootstrap.TryBindActiveGameplayCamera();
+        LevelManager.RunFrameZeroRuntimeSync();
         StartCoroutine(InitSequence());
     }
 
     private IEnumerator InitSequence()
     {
-        GameplayCameraBootstrap.TryBindActiveGameplayCamera();
+        LevelManager.RunFrameZeroRuntimeSync();
         AuditLevelColliders();
         Physics.SyncTransforms();
 
@@ -54,15 +54,12 @@ public class LevelInitialization : MonoBehaviour
         if (LevelBuilder.Instance != null)
         {
             float deadline = Time.realtimeSinceStartup + 12f;
-            while ((!LevelBuilder.IsRuntimeLevelReady
-                    || (LevelInteriorSpawnResolver.RequiresInteriorSpawn && !LevelBuilder.IsRuntimeNavMeshReady))
-                   && Time.realtimeSinceStartup < deadline)
+            while (!LevelBuilder.IsRuntimeLevelReady && Time.realtimeSinceStartup < deadline)
             {
-                GameplayCameraBootstrap.TryBindActiveGameplayCamera();
+                LevelManager.RunFrameZeroRuntimeSync();
                 yield return null;
             }
-            if (!LevelBuilder.IsRuntimeLevelReady
-                || (LevelInteriorSpawnResolver.RequiresInteriorSpawn && !LevelBuilder.IsRuntimeNavMeshReady))
+            if (!LevelBuilder.IsRuntimeLevelReady)
                 Debug.LogWarning("[LevelInitialization] Continuing player initialization after runtime readiness timeout.");
         }
 
@@ -97,9 +94,6 @@ public class LevelInitialization : MonoBehaviour
 
     private static void SnapPlayerToSpawn()
     {
-        if (LevelInteriorSpawnResolver.RequiresInteriorSpawn && !LevelBuilder.IsRuntimeNavMeshReady)
-            return;
-
         PlayerController player = Object.FindFirstObjectByType<PlayerController>();
         if (player == null) return;
 

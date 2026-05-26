@@ -580,14 +580,7 @@ public class LevelBuilder : MonoBehaviour
 
             if (useSciFiArena && !_navMeshReady)
             {
-                _playerSpawnReady = false;
-                SetExistingPlayersActive(false);
-                if (GameManager.Instance != null)
-                    GameManager.Instance.InitializeEnemyCount(0);
-                _runtimeInitializationComplete = true;
-                _runtimeBuildInProgress = false;
-                Debug.LogError("[SciFiSpawn] player spawn blocked until SciFiArena NavMesh is valid.");
-                return;
+                Debug.LogWarning("[SciFiSpawn] SciFiArena NavMesh is not valid; player spawn will use adaptive floor projection and enemies remain gated by NavMesh readiness.");
             }
 
             ConfigurePlayer();
@@ -1459,6 +1452,7 @@ public class LevelBuilder : MonoBehaviour
         if (!useSciFiArena || mapRoot == null)
             return;
 
+        LevelInteriorSpawnResolver.MarkWalkableFloorColliders(mapRoot);
         Vector3[] seeds = BuildSciFiIndoorPlayerSpawnSeeds();
         if (seeds.Length == 0)
             return;
@@ -1474,18 +1468,42 @@ public class LevelBuilder : MonoBehaviour
         for (int i = spawnRoot.childCount - 1; i >= 0; i--)
         {
             Transform child = spawnRoot.GetChild(i);
-            if (child != null && child.name.StartsWith("PlayerSpawn", System.StringComparison.OrdinalIgnoreCase))
+            if (child != null
+                && (child.name.StartsWith("PlayerSpawn", System.StringComparison.OrdinalIgnoreCase)
+                    || child.name.StartsWith("InsideSpawn", System.StringComparison.OrdinalIgnoreCase)))
                 DestroyObjectSafe(child.gameObject);
         }
 
+        int currentLevel = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+        int created = 0;
         for (int i = 0; i < seeds.Length; i++)
         {
-            GameObject marker = new GameObject(i == 0 ? "PlayerSpawn" : $"PlayerSpawn_{i:00}");
+            if (!LevelInteriorSpawnResolver.TryProjectToInteriorSpawnAnchor(seeds[i], out Vector3 anchor))
+                continue;
+
+            GameObject marker = new GameObject(created == 0 ? $"InsideSpawn_L{currentLevel:00}" : $"InsideSpawn_{created:00}");
             marker.transform.SetParent(spawnRoot, false);
-            marker.transform.position = seeds[i];
+            marker.transform.position = anchor;
+            TrySetTag(marker, "InsideSpawn");
+            created++;
         }
 
-        Debug.Log($"[SciFiFix] indoor player spawn markers={seeds.Length} center={seeds[0]}");
+        if (created == 0)
+            Debug.LogWarning("[SciFiFix] no generated indoor spawn markers could be projected; adaptive spawn fallback will scan scene floor geometry.");
+        else
+            Debug.Log($"[SciFiFix] indoor player spawn markers={created}");
+    }
+
+    private static void TrySetTag(GameObject obj, string tagName)
+    {
+        if (obj == null)
+            return;
+
+        try
+        {
+            obj.tag = tagName;
+        }
+        catch { }
     }
 
     private Vector3[] BuildSciFiIndoorPlayerSpawnSeeds()
@@ -3683,11 +3701,8 @@ public class LevelBuilder : MonoBehaviour
         {
             if (!LevelInteriorSpawnResolver.TryResolveInteriorSpawn(playerController, out safeSpawn))
             {
-                Debug.Log("[SciFiSpawn] blocked player spawn because no valid indoor NavMesh marker or central hall fallback exists.");
-                _playerSpawnReady = false;
-                if (GameManager.Instance != null)
-                    GameManager.Instance.InitializeEnemyCount(0);
-                return;
+                Debug.LogWarning("[SciFiSpawn] adaptive spawn resolver did not find a projected floor; preserving current player transform.");
+                safeSpawn = playerController.transform.position;
             }
         }
 
@@ -4761,27 +4776,16 @@ public class LevelBuilder : MonoBehaviour
         int mask = ~0;
         if (hittable >= 0) mask &= ~(1 << hittable);
 
-        // Enclosed sci-fi arena: floor is not a "street", so street-based outdoor sweeps
-        // will never succeed and emit confusing warnings. Use the prefab's PlayerSpawn
-        // marker + NavMesh-anchored capsule validation instead. CRITICALLY, when
-        // useSciFiArena is true we never fall through to the street sweeps — that would
-        // re-emit "No street spawn found" warnings on every spawn.
         if (Instance != null && Instance.useSciFiArena)
         {
-            if (TryFindSciFiArenaIndoorSpawn(fallback, center, radius, height, mask, out Vector3 indoorFeet))
+            if (LevelInteriorSpawnResolver.TryResolveInteriorSpawn(playerController, out Vector3 indoorFeet))
             {
                 Debug.Log($"[LevelBuilder] SciFiArena indoor player spawn at {indoorFeet}");
-                return indoorFeet + Vector3.up * 0.02f;
+                return indoorFeet;
             }
 
-            if (TryFindBoundedWarehouseFallback(out Vector3 boundedFallback))
-            {
-                Debug.LogWarning("[LevelBuilder] SciFiArena player spawn could not clamp to NavMesh; using bounded warehouse center so the player stays inside the assembly.");
-                return boundedFallback + Vector3.up * 0.02f;
-            }
-
-            Debug.LogError("[LevelBuilder] SciFiArena spawn failed: no valid NavMesh point and no warehouse bounds.");
-            return SafeFallbackSpawn;
+            Debug.LogWarning("[LevelBuilder] SciFiArena adaptive spawn failed; using requested fallback.");
+            return fallback;
         }
 
         if (EnemySpawnGeometry.TryFindStreetPlayerSpawn(halfSize, fallback, out Vector3 streetFeet)
@@ -4906,13 +4910,23 @@ public class LevelBuilder : MonoBehaviour
         if (arena == null) arena = GameObject.Find("SciFiArena(Clone)");
         if (arena == null) return null;
 
+        int currentLevel = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+        Transform insideLevel = arena.transform.Find($"SpawnPoints/InsideSpawn_L{currentLevel:00}");
+        if (insideLevel != null) return insideLevel;
+
+        Transform inside = arena.transform.Find("SpawnPoints/InsideSpawn");
+        if (inside != null) return inside;
+
         Transform direct = arena.transform.Find("SpawnPoints/PlayerSpawn");
         if (direct != null) return direct;
 
         Transform[] all = arena.GetComponentsInChildren<Transform>(true);
         for (int i = 0; i < all.Length; i++)
         {
-            if (all[i] != null && all[i].name == "PlayerSpawn") return all[i];
+            if (all[i] == null) continue;
+            if (all[i].name.Equals($"InsideSpawn_L{currentLevel:00}", System.StringComparison.OrdinalIgnoreCase)) return all[i];
+            if (all[i].name.Equals("InsideSpawn", System.StringComparison.OrdinalIgnoreCase)) return all[i];
+            if (all[i].name == "PlayerSpawn") return all[i];
         }
         return null;
     }

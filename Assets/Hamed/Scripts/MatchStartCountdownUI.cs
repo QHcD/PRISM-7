@@ -10,6 +10,7 @@ public class MatchStartCountdownUI : MonoBehaviour
 
     public static IEnumerator Play()
     {
+        LevelManager.RunFrameZeroRuntimeSync();
         GameObject host = new GameObject("MatchStartCountdown");
         DontDestroyOnLoad(host);
         var runner = host.AddComponent<MatchStartCountdownUI>();

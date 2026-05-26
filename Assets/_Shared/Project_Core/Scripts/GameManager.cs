@@ -1055,12 +1055,14 @@ public class GameManager : MonoBehaviour
 
         yield return null;
         yield return null;
+        LevelManager.RunFrameZeroRuntimeSync();
 
         if (loadingUi != null)
             loadingUi.DestroySelf();
 
         if (sceneName == "GameScene")
         {
+            LevelManager.RunFrameZeroRuntimeSync();
             yield return MatchStartCountdownUI.Play();
             if (!MultiplayerMode.IsMultiplayer)
             {

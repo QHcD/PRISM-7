@@ -320,6 +320,12 @@ public class CameraController : MonoBehaviour
             StartCoroutine(FrameEndAuthoritativeSnap());
     }
 
+    private void OnPreCull()
+    {
+        if (target == null)
+            GameplayCameraBootstrap.TryBindActiveGameplayCamera();
+    }
+
     private void IncludeLayerIfExists(string layerName)
     {
         int layer = LayerMask.NameToLayer(layerName);
@@ -761,6 +767,7 @@ public static class GameplayCameraBootstrap
             return false;
 
         Physics.SyncTransforms();
+        Camera camera = EnsureGameplayCameraForTarget(target);
         bool bound = false;
 
         CameraController[] controllers = Object.FindObjectsByType<CameraController>(
@@ -797,35 +804,36 @@ public static class GameplayCameraBootstrap
             bound = true;
         }
 
-        Camera camera = ResolveGameplayCamera(target);
         if (camera != null)
         {
+            camera.gameObject.SetActive(true);
             if (!camera.gameObject.CompareTag("MainCamera"))
                 camera.gameObject.tag = "MainCamera";
             camera.enabled = true;
 
             CameraController controller = camera.GetComponent<CameraController>();
-            if (controller != null && !bound)
+            if (controller != null)
             {
                 controller.BindAuthoritativeTarget(target);
                 bound = true;
             }
 
             ThirdPersonOrbitCamera orbitCamera = camera.GetComponent<ThirdPersonOrbitCamera>();
-            if (orbitCamera != null && !bound)
+            if (orbitCamera != null)
             {
                 orbitCamera.BindAuthoritativeTarget(target);
                 bound = true;
             }
         }
 
+        BindCinemachineTargets(target);
         return bound;
     }
 
     public static Transform ResolveAuthoritativePlayerTarget()
     {
         PlayerController[] players = Object.FindObjectsByType<PlayerController>(
-            FindObjectsInactive.Exclude,
+            FindObjectsInactive.Include,
             FindObjectsSortMode.None);
         PlayerController best = null;
         int bestScore = int.MinValue;
@@ -833,7 +841,7 @@ public static class GameplayCameraBootstrap
         for (int i = 0; i < players.Length; i++)
         {
             PlayerController player = players[i];
-            if (player == null || !player.gameObject.activeInHierarchy)
+            if (player == null || !player.gameObject.scene.IsValid())
                 continue;
             if (!IsLocalPlayer(player.transform))
                 continue;
@@ -845,6 +853,8 @@ public static class GameplayCameraBootstrap
                 score += 1000;
             if (player.CompareTag("Player"))
                 score += 100;
+            if (player.gameObject.activeInHierarchy)
+                score += 50;
             if (player.enabled)
                 score += 10;
             if (player.ActiveCamera != null)
@@ -870,6 +880,47 @@ public static class GameplayCameraBootstrap
         return tagged != null && tagged.activeInHierarchy ? tagged.transform : null;
     }
 
+    private static Camera EnsureGameplayCameraForTarget(Transform target)
+    {
+        Camera camera = ResolveGameplayCamera(target);
+        if (camera == null)
+        {
+            GameObject cameraObject = new GameObject("FrameZeroGameplayCamera");
+            camera = cameraObject.AddComponent<Camera>();
+            camera.fieldOfView = 68f;
+            camera.nearClipPlane = 0.08f;
+            camera.farClipPlane = 1000f;
+            camera.clearFlags = CameraClearFlags.Skybox;
+            if (Object.FindFirstObjectByType<AudioListener>() == null)
+                cameraObject.AddComponent<AudioListener>();
+        }
+
+        camera.gameObject.SetActive(true);
+        camera.enabled = true;
+        camera.tag = "MainCamera";
+
+        ThirdPersonOrbitCamera orbit = camera.GetComponent<ThirdPersonOrbitCamera>();
+        if (orbit == null)
+            orbit = camera.gameObject.AddComponent<ThirdPersonOrbitCamera>();
+        orbit.target = target;
+        orbit.defaultDistance = Mathf.Max(4.5f, orbit.defaultDistance);
+        orbit.minDistance = Mathf.Max(1.25f, orbit.minDistance);
+        orbit.pivotHeightOffset = Mathf.Approximately(orbit.pivotHeightOffset, 0f) ? 1.45f : orbit.pivotHeightOffset;
+        orbit.shoulderOffset = Mathf.Approximately(orbit.shoulderOffset, 0f) ? 0.48f : orbit.shoulderOffset;
+        orbit.enableCollision = true;
+
+        CameraController controller = camera.GetComponent<CameraController>();
+        if (controller == null && CameraController.Instance == null)
+            controller = camera.gameObject.AddComponent<CameraController>();
+        if (controller != null)
+        {
+            controller.target = target;
+            controller.enabled = false;
+        }
+
+        return camera;
+    }
+
     private static Camera ResolveGameplayCamera(Transform target)
     {
         PlayerController player = target != null ? target.GetComponent<PlayerController>() : null;
@@ -889,6 +940,42 @@ public static class GameplayCameraBootstrap
             return controller.GetComponent<Camera>();
 
         return null;
+    }
+
+    private static void BindCinemachineTargets(Transform target)
+    {
+        MonoBehaviour[] behaviours = Object.FindObjectsByType<MonoBehaviour>(
+            FindObjectsInactive.Include,
+            FindObjectsSortMode.None);
+
+        for (int i = 0; i < behaviours.Length; i++)
+        {
+            MonoBehaviour behaviour = behaviours[i];
+            if (behaviour == null)
+                continue;
+
+            System.Type type = behaviour.GetType();
+            string typeName = type.FullName ?? type.Name;
+            if (typeName.IndexOf("Cinemachine", System.StringComparison.OrdinalIgnoreCase) < 0)
+                continue;
+
+            SetTransformMember(type, behaviour, "Follow", target);
+            SetTransformMember(type, behaviour, "LookAt", target);
+        }
+    }
+
+    private static void SetTransformMember(System.Type type, object instance, string memberName, Transform target)
+    {
+        System.Reflection.PropertyInfo property = type.GetProperty(memberName);
+        if (property != null && property.CanWrite && typeof(Transform).IsAssignableFrom(property.PropertyType))
+        {
+            property.SetValue(instance, target, null);
+            return;
+        }
+
+        System.Reflection.FieldInfo field = type.GetField(memberName);
+        if (field != null && typeof(Transform).IsAssignableFrom(field.FieldType))
+            field.SetValue(instance, target);
     }
 
     private static bool IsLocalCamera(Transform root)

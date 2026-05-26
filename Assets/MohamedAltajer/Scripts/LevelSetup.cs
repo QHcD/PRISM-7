@@ -12,7 +12,7 @@ public class LevelSetup : MonoBehaviour
             return;
 
         GameplayCameraBootstrap.FlushAllTargetCaches();
-        GameplayCameraBootstrap.TryBindActiveGameplayCamera();
+        LevelManager.RunFrameZeroRuntimeSync();
     }
 
     private IEnumerator Start()
@@ -20,15 +20,12 @@ public class LevelSetup : MonoBehaviour
         if (Application.isPlaying && LevelBuilder.Instance != null)
         {
             float deadline = Time.realtimeSinceStartup + 12f;
-            while ((!LevelBuilder.IsRuntimeLevelReady
-                    || (LevelInteriorSpawnResolver.RequiresInteriorSpawn && !LevelBuilder.IsRuntimeNavMeshReady))
-                   && Time.realtimeSinceStartup < deadline)
+            while (!LevelBuilder.IsRuntimeLevelReady && Time.realtimeSinceStartup < deadline)
             {
-                GameplayCameraBootstrap.TryBindActiveGameplayCamera();
+                LevelManager.RunFrameZeroRuntimeSync();
                 yield return null;
             }
-            if (!LevelBuilder.IsRuntimeLevelReady
-                || (LevelInteriorSpawnResolver.RequiresInteriorSpawn && !LevelBuilder.IsRuntimeNavMeshReady))
+            if (!LevelBuilder.IsRuntimeLevelReady)
                 Debug.LogWarning("[LevelSetup] Continuing setup after runtime readiness timeout.");
         }
 
@@ -103,11 +100,10 @@ public class LevelSetup : MonoBehaviour
 
     private void ForceFallbackSpawnIfNeeded()
     {
-        if (LevelInteriorSpawnResolver.RequiresInteriorSpawn && !LevelBuilder.IsRuntimeNavMeshReady)
-            return;
-
         if (player == null)
             return;
+
+        LevelManager.RunFrameZeroRuntimeSync();
 
         Vector3 position = player.transform.position;
         bool unsafePosition = float.IsNaN(position.x)
@@ -143,7 +139,7 @@ public class LevelSetup : MonoBehaviour
         bool hasFbxMap = GameObject.Find("FbxMap") != null;
         if (LevelBuilder.Instance != null && LevelBuilder.Instance.useSciFiArena && !hasFbxMap)
         {
-            Debug.LogError("[SciFiSpawn] SciFiArena map root missing; fallback exterior ground will not be created.");
+            Debug.LogWarning("[SciFiSpawn] SciFiArena map root missing; spawn resolver will use generic scene floor projection.");
             return;
         }
         bool foundGround = false;

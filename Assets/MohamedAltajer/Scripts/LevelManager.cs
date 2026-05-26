@@ -60,7 +60,7 @@ public class LevelManager : MonoBehaviour
         if (scene.name == MainMenuSceneName) return;
 
         GameplayCameraBootstrap.FlushAllTargetCaches();
-        GameplayCameraBootstrap.TryBindActiveGameplayCamera();
+        RunFrameZeroRuntimeSync();
 
         if (_sceneSafetyRoutine != null)
             StopCoroutine(_sceneSafetyRoutine);
@@ -83,14 +83,14 @@ public class LevelManager : MonoBehaviour
 
     private IEnumerator SceneSafetySequence()
     {
-        GameplayCameraBootstrap.TryBindActiveGameplayCamera();
+        RunFrameZeroRuntimeSync();
 
         if (LevelBuilder.Instance != null)
         {
             float deadline = Time.realtimeSinceStartup + WatchdogDurationSeconds;
             while (!LevelBuilder.IsRuntimeLevelReady && Time.realtimeSinceStartup < deadline)
             {
-                GameplayCameraBootstrap.TryBindActiveGameplayCamera();
+                RunFrameZeroRuntimeSync();
                 yield return null;
             }
             if (!LevelBuilder.IsRuntimeLevelReady)
@@ -98,16 +98,54 @@ public class LevelManager : MonoBehaviour
         }
 
         StabilizeEnvironment();
-        ForcePlayerToInterior();
-        GameplayCameraBootstrap.TryBindActiveGameplayCamera();
+        RunFrameZeroRuntimeSync();
         _spawnWatchdog = StartCoroutine(SpawnSafetyWatchdog());
         _sceneSafetyRoutine = null;
     }
 
+    public static bool RunFrameZeroRuntimeSync()
+    {
+        Transform target = GameplayCameraBootstrap.ResolveAuthoritativePlayerTarget();
+        if (target == null)
+            return false;
+
+        PlayerController player = target.GetComponent<PlayerController>()
+            ?? target.GetComponentInChildren<PlayerController>(true)
+            ?? target.GetComponentInParent<PlayerController>();
+
+        if (player != null && ShouldProjectPlayer(player))
+        {
+            if (LevelInteriorSpawnResolver.TryResolveSceneSpawn(player, out Vector3 spawn))
+            {
+                LevelInteriorSpawnResolver.ApplyExternalSpawn(player, spawn);
+                Physics.SyncTransforms();
+            }
+        }
+
+        return GameplayCameraBootstrap.BindActiveGameplayCamera(target);
+    }
+
+    private static bool ShouldProjectPlayer(PlayerController player)
+    {
+        if (player == null)
+            return false;
+
+        Vector3 pos = player.transform.position;
+        bool invalid = float.IsNaN(pos.x) || float.IsNaN(pos.y) || float.IsNaN(pos.z)
+            || float.IsInfinity(pos.x) || float.IsInfinity(pos.y) || float.IsInfinity(pos.z)
+            || pos.y < -0.5f;
+
+        if (!invalid && LevelInteriorSpawnResolver.RequiresInteriorSpawn)
+            invalid = !LevelInteriorSpawnResolver.IsValidInteriorPosition(pos);
+        if (!invalid)
+            invalid = !HasGroundDirectlyBelow(pos);
+
+        return invalid;
+    }
+
     private static void ForcePlayerToInterior()
     {
-        if (LevelInteriorSpawnResolver.RequiresInteriorSpawn
-            && (!LevelBuilder.IsRuntimeLevelReady || !LevelBuilder.IsRuntimeNavMeshReady))
+        if (LevelInteriorSpawnResolver.RequiresInteriorSpawn && !LevelBuilder.IsRuntimeLevelReady)
             return;
 
         PlayerController player = Object.FindFirstObjectByType<PlayerController>();
@@ -159,7 +197,7 @@ public class LevelManager : MonoBehaviour
 
         if (LevelInteriorSpawnResolver.RequiresInteriorSpawn)
         {
-            if (!LevelBuilder.IsRuntimeLevelReady || !LevelBuilder.IsRuntimeNavMeshReady)
+            if (!LevelBuilder.IsRuntimeLevelReady)
                 return false;
 
             if (!nanPosition && !belowVoid && LevelInteriorSpawnResolver.IsValidInteriorPosition(pos))
