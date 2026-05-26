@@ -72,6 +72,12 @@ public class PlayerHealth : MonoBehaviour, IDamageable
 
     public void TakeDamage(float amount)
     {
+        if (HealthManager.BlocksPlayerDamage(gameObject))
+        {
+            ResetToFullHealth();
+            return;
+        }
+
         if (_deathHandled || amount <= 0f)
         {
             Debug.Log($"[Health] rejected damage reason=dead-or-zero amount={amount}");
@@ -108,6 +114,12 @@ public class PlayerHealth : MonoBehaviour, IDamageable
 
     public void ApplySyncedHealth(float syncedHealth, bool fromNetworkStream = false)
     {
+        if (HealthManager.BlocksPlayerDamage(gameObject))
+        {
+            ResetToFullHealth();
+            return;
+        }
+
         if (IsLocalOwnedPlayer())
             return;
 
@@ -288,6 +300,12 @@ public class PlayerHealth : MonoBehaviour, IDamageable
 
     public void ReceiveDamage(int amount, GameObject attackerRoot)
     {
+        if (HealthManager.BlocksPlayerDamage(gameObject))
+        {
+            ResetToFullHealth();
+            return;
+        }
+
         bool fromEnemy = attackerRoot != null && attackerRoot.GetComponentInParent<EnemyController>() != null;
 
 #if PUN_2_OR_NEWER
@@ -356,6 +374,17 @@ public class PlayerHealth : MonoBehaviour, IDamageable
     {
         if (amount <= 0f) return;
         currentHealth = Mathf.Min(maxHealth, currentHealth + Mathf.Abs(amount));
+        PushHealthToHud(false);
+    }
+
+    public void ResetToFullHealth()
+    {
+        maxHealth = Mathf.Max(1f, maxHealth);
+        currentHealth = maxHealth;
+        timeSinceLastDamage = regenDelay + 1f;
+        isRegenerating = false;
+        _deathHandled = false;
+        _lastAttackerStatsId = null;
         PushHealthToHud(false);
     }
 

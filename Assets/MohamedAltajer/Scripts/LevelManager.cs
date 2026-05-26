@@ -122,6 +122,9 @@ public class LevelManager : MonoBehaviour
             }
         }
 
+        if (HealthManager.CountdownIsActive)
+            HealthManager.ResetPlayerHealthAndUi();
+
         return GameplayCameraBootstrap.BindActiveGameplayCamera(target);
     }
 

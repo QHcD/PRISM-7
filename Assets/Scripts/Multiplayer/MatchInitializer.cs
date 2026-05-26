@@ -99,6 +99,7 @@ public sealed class MatchInitializer : MonoBehaviour
 
         _countdownRunning = true;
         _countdownFinished = false;
+        HealthManager.BeginStartupProtection();
         EndMatchCinematic.GameplayLocked = true;
         ZeroLocalMovementVectors();
 
@@ -145,6 +146,8 @@ public sealed class MatchInitializer : MonoBehaviour
         for (int i = 0; i < steps.Length; i++)
         {
             bool isGo = steps[i] == "GO!";
+            if (isGo)
+                HealthManager.ReleaseStartupProtection();
             if (label != null)
                 PrismaticHudTypography.ApplyCountdownStyle(label, isGo);
             yield return new WaitForSecondsRealtime(isGo ? 0.6f : 0.8f);

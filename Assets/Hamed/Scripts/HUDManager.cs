@@ -502,6 +502,12 @@ public class HUDManager : MonoBehaviour
 
     public void ShowDamageFlash(float damageAmount)
     {
+        if (HealthManager.CountdownIsActive)
+        {
+            ClearDamageOverlays();
+            return;
+        }
+
         // Scale flash intensity with damage (cap at 1.0)
         float intensity = Mathf.Clamp01(damageAmount / 40f);
         damageFlashAlpha = Mathf.Max(damageFlashAlpha, 0.25f + intensity * 0.55f);
@@ -509,6 +515,25 @@ public class HUDManager : MonoBehaviour
         {
             damageFlashImage.color = new Color(0.85f, 0.05f, 0.05f, damageFlashAlpha);
         }
+    }
+
+    public void ClearDamageOverlays()
+    {
+        damageFlashAlpha = 0f;
+        lowHealthPulse = 0f;
+
+        if (damageFlashImage == null)
+            EnsureDamageFlashLayer();
+        if (lowHealthImage == null)
+            EnsureLowHealthLayer();
+
+        if (damageFlashImage != null)
+            damageFlashImage.color = new Color(0.85f, 0.05f, 0.05f, 0f);
+        if (lowHealthImage != null)
+            lowHealthImage.color = new Color(0.75f, 0.02f, 0.02f, 0f);
+
+        if (playerHealth != null)
+            UpdateHealth(playerHealth.maxHealth, playerHealth.maxHealth, playerHealth);
     }
 
     private void EnsureDamageFlashLayer()
@@ -538,6 +563,12 @@ public class HUDManager : MonoBehaviour
     private void TickDamageFlash()
     {
         if (damageFlashImage == null) return;
+        if (HealthManager.CountdownIsActive)
+        {
+            damageFlashAlpha = 0f;
+            damageFlashImage.color = new Color(0.85f, 0.05f, 0.05f, 0f);
+            return;
+        }
         damageFlashAlpha = Mathf.MoveTowards(damageFlashAlpha, 0f, DamageFlashDecay * Time.deltaTime);
         damageFlashImage.color = new Color(0.85f, 0.05f, 0.05f, damageFlashAlpha);
     }
@@ -566,6 +597,12 @@ public class HUDManager : MonoBehaviour
     private void TickLowHealthVignette()
     {
         if (lowHealthImage == null || playerHealth == null) return;
+        if (HealthManager.CountdownIsActive)
+        {
+            lowHealthPulse = 0f;
+            lowHealthImage.color = new Color(0.75f, 0.02f, 0.02f, 0f);
+            return;
+        }
 
         float ratio = playerHealth.currentHealth / Mathf.Max(1f, playerHealth.maxHealth);
         if (ratio > 0.35f)

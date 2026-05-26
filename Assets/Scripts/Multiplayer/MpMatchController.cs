@@ -348,10 +348,12 @@ public class MpMatchController : MonoBehaviour
                 EndMatchCinematic.GameplayLocked = true;
                 break;
             case 2: // Countdown
+                HealthManager.BeginStartupProtection();
                 EndMatchCinematic.GameplayLocked = true;
                 StartCoroutine(ShowCountdownOverlay());
                 break;
             case 3: // InMatch
+                HealthManager.ReleaseStartupProtection();
                 EndMatchCinematic.GameplayLocked = false;
                 break;
             case 4: // MatchEnded

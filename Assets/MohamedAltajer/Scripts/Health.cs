@@ -37,6 +37,12 @@ public class Health : MonoBehaviour, IDamageable
     /// </summary>
     public void ReceiveDamage(int amount, GameObject attackerRoot)
     {
+        if (HealthManager.BlocksPlayerDamage(gameObject))
+        {
+            ResetToFullHealth();
+            return;
+        }
+
         TakeDamage(amount);
     }
 
@@ -45,6 +51,12 @@ public class Health : MonoBehaviour, IDamageable
     /// <summary>Deducts <paramref name="damageAmount"/> HP and triggers death when HP reaches 0.</summary>
     public void TakeDamage(float damageAmount)
     {
+        if (HealthManager.BlocksPlayerDamage(gameObject))
+        {
+            ResetToFullHealth();
+            return;
+        }
+
         if (_isDead) return;
 
         _currentHealth = Mathf.Max(0f, _currentHealth - Mathf.Abs(damageAmount));
@@ -69,6 +81,12 @@ public class Health : MonoBehaviour, IDamageable
     {
         _currentHealth = maxHealth;
         _isDead        = false;
+    }
+
+    public void ResetToFullHealth()
+    {
+        _currentHealth = maxHealth;
+        _isDead = false;
     }
 
     // ── Death ────────────────────────────────────────────────────────────────

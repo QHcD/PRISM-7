@@ -10,6 +10,7 @@ public class MatchStartCountdownUI : MonoBehaviour
 
     public static IEnumerator Play()
     {
+        HealthManager.BeginStartupProtection();
         LevelManager.RunFrameZeroRuntimeSync();
         GameObject host = new GameObject("MatchStartCountdown");
         DontDestroyOnLoad(host);
@@ -35,6 +36,8 @@ public class MatchStartCountdownUI : MonoBehaviour
         for (int i = 0; i < steps.Length; i++)
         {
             bool isGo = steps[i] == "GO!";
+            if (isGo)
+                HealthManager.ReleaseStartupProtection();
             SetBigText(steps[i], isGo);
             AudioClip clip = isGo ? VoClipAutoIndex.ResolveCountdownStart() : VoClipAutoIndex.ResolveCountdownBeep();
             if (clip != null)
