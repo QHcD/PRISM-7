@@ -1832,10 +1832,35 @@ public class LevelBuilder : MonoBehaviour
         Physics.BakeMesh(mf.sharedMesh.GetInstanceID(), true);
     }
 
+    private static bool ShouldSuppressColliderInsideStair(Collider col)
+    {
+        if (col == null || col.isTrigger) return false;
+        if (IsGeneratedTraversalCollider(col.transform)) return false;
+
+        string name = col.gameObject.name.ToLowerInvariant();
+
+        // If it is a real wall, floor, column, pillar, platform, etc. we do not suppress it.
+        // But only if it is NOT a stair, step, tread, railing, guard, etc.
+        bool isFloorOrWall = name.Contains("floor") || name.Contains("ground") || name.Contains("wall") || 
+                             name.Contains("platform") || name.Contains("column") || name.Contains("pillar") || 
+                             name.Contains("boundary") || name.Contains("ceiling") || name.Contains("roof");
+        
+        bool isStairOrRailing = name.Contains("stair") || name.Contains("step") || name.Contains("tread") || 
+                                name.Contains("rail") || name.Contains("guard") || name.Contains("trim") || 
+                                name.Contains("handrail") || name.Contains("decorative");
+
+        if (isFloorOrWall && !isStairOrRailing)
+        {
+            return false; // Do not suppress structural floor/wall bounds
+        }
+
+        return true; // Suppress it to allow smooth traversal!
+    }
+
     private static bool EnsureSmoothTraversalCollider(Transform stairRoot)
     {
         if (stairRoot == null) return false;
-        if (!TryGetTraversalRendererBounds(stairRoot, out Bounds bounds))
+        if (!TryGetRendererBounds(stairRoot, out Bounds bounds))
             return false;
 
         if (bounds.size.x < 0.15f || bounds.size.z < 0.15f)
@@ -1849,7 +1874,10 @@ public class LevelBuilder : MonoBehaviour
                 continue;
             if (IsGeneratedTraversalCollider(collider.transform))
                 continue;
-            collider.enabled = false;
+            if (ShouldSuppressColliderInsideStair(collider))
+            {
+                collider.enabled = false;
+            }
         }
 
         Transform holder = stairRoot.Find("SciFiSmoothTraversalCollider");
@@ -1952,30 +1980,42 @@ public class LevelBuilder : MonoBehaviour
         Vector3 axis = bounds.size.x >= bounds.size.z ? Vector3.right : Vector3.forward;
         float run = Mathf.Max(0.45f, Vector3.Scale(bounds.size, new Vector3(Mathf.Abs(axis.x), 0f, Mathf.Abs(axis.z))).magnitude);
         float width = axis == Vector3.right ? bounds.size.z : bounds.size.x;
-        float lowerY = bounds.min.y + 0.05f;
-        float upperY = Mathf.Max(lowerY + 0.08f, bounds.max.y + 0.05f);
+        
+        float lowerY = bounds.min.y + 0.02f;
+        float upperY = Mathf.Max(lowerY + 0.05f, bounds.max.y);
 
         if (TryResolveTraversalSlopeFromHierarchy(stairRoot, axis, out bool positiveAxisIsUp, out float lowAverageY, out float highAverageY))
         {
             if (!positiveAxisIsUp)
                 axis = -axis;
-            lowerY = lowAverageY + 0.05f;
-            upperY = Mathf.Max(lowerY + 0.08f, highAverageY + 0.05f);
+            lowerY = lowAverageY;
+            upperY = Mathf.Max(lowerY + 0.05f, highAverageY);
         }
 
-        const float LandingOverlap = 0.9f;
-        Vector3 start = bounds.center - axis * (run * 0.5f + LandingOverlap);
-        Vector3 end = bounds.center + axis * (run * 0.5f + LandingOverlap);
-        start.y = Mathf.Max(bounds.min.y + 0.02f, lowerY);
-        end.y = upperY + 0.08f;
-        Vector3 forward = end - start;
+        // We extend the ramp onto the landings to ensure a smooth transition.
+        // A LandingOverlap of 0.45m is perfect for transitioning.
+        const float LandingOverlap = 0.45f;
+        
+        Vector3 surfaceStart = bounds.center - axis * (run * 0.5f + LandingOverlap);
+        Vector3 surfaceEnd = bounds.center + axis * (run * 0.5f + LandingOverlap);
+        surfaceStart.y = lowerY;
+        surfaceEnd.y = upperY;
+
+        Vector3 forward = surfaceEnd - surfaceStart;
         float length = Mathf.Max(0.5f, forward.magnitude);
         forward.Normalize();
 
-        center = (start + end) * 0.5f;
         rotation = Quaternion.LookRotation(forward, Vector3.up);
-        float usableWidth = Mathf.Clamp(width * 0.82f, 1.05f, Mathf.Max(1.05f, width - 0.25f));
-        float thickness = Mathf.Clamp(bounds.size.y * 0.18f, 0.22f, 0.42f);
+        
+        // We use a robust thickness of 0.35m
+        float thickness = 0.35f;
+
+        // Offset the center downwards along the ramp's normal (rotation * Vector3.up) by thickness * 0.5
+        // so that the top surface of the BoxCollider lies EXACTLY on the plane from surfaceStart to surfaceEnd!
+        center = (surfaceStart + surfaceEnd) * 0.5f - (rotation * Vector3.up) * (thickness * 0.5f);
+
+        // Make the ramp wide enough to cover the entire stairs, leaving a tiny margin (e.g. 0.98f)
+        float usableWidth = Mathf.Max(1.1f, width * 0.98f);
         size = new Vector3(usableWidth, thickness, length);
     }
 
@@ -2235,7 +2275,7 @@ public class LevelBuilder : MonoBehaviour
         for (Transform t = transform; t != null; t = t.parent)
         {
             string n = t.name.ToLowerInvariant();
-            if (n.Contains("stair") || n.Contains("step") || n.Contains("ramp"))
+            if (n.Contains("stair") || n.Contains("step") || n.Contains("ramp") || n.Contains("catwalk") || n.Contains("ladder"))
                 return true;
         }
         return false;
@@ -2291,7 +2331,8 @@ public class LevelBuilder : MonoBehaviour
             || lowerName.Contains("staircase")
             || lowerName.Contains("step")
             || lowerName.Contains("steps")
-            || lowerName.Contains("catwalk steps")
+            || lowerName.Contains("catwalk")
+            || lowerName.Contains("ladder")
             || lowerName.Contains("ramp");
     }
 
@@ -2360,12 +2401,12 @@ public class LevelBuilder : MonoBehaviour
             && Mathf.Max(box.bounds.size.x, box.bounds.size.z) > 2.5f
             && box.transform.GetComponent<MeshFilter>() == null
             && box.transform.GetComponent<Renderer>() == null;
-        if (IsRuntimeColliderRequiredModule(collider.transform) && !broadEmptyParent)
-            return false;
 
         Renderer[] renderers = box.GetComponentsInChildren<Renderer>(true);
         if (renderers.Length == 0)
-            return false;
+        {
+            return broadEmptyParent;
+        }
 
         Bounds visual = default;
         bool hasVisual = false;
@@ -2386,7 +2427,7 @@ public class LevelBuilder : MonoBehaviour
         }
 
         if (!hasVisual)
-            return false;
+            return broadEmptyParent;
 
         Bounds colliderBounds = box.bounds;
         bool tooWide = colliderBounds.size.x > visual.size.x + 1.25f
@@ -2398,7 +2439,8 @@ public class LevelBuilder : MonoBehaviour
     {
         for (Transform t = transform; t != null; t = t.parent)
         {
-            if (t.name.ToLowerInvariant().Contains("navmeshproxy"))
+            string n = t.name.ToLowerInvariant();
+            if (n.Contains("navmeshproxy") || n.Contains("navmesh_proxy") || n.Contains("navmesh proxy") || n.Contains("proxycollider") || n.Contains("proxy_collider"))
                 return true;
         }
         return false;
@@ -2410,6 +2452,17 @@ public class LevelBuilder : MonoBehaviour
             return false;
         if (IsGeneratedTraversalCollider(collider.transform))
             return false;
+            
+        Transform stairRoot = FindStairTraversalRoot(collider.transform);
+        if (stairRoot != null)
+        {
+            if (HasActiveSmoothTraversalCollider(stairRoot))
+            {
+                return ShouldSuppressColliderInsideStair(collider);
+            }
+            return false; // Do not suppress colliders if we failed to create the smooth traversal ramp
+        }
+
         return IsStairOrRampModule(collider.transform);
     }
 
@@ -4332,8 +4385,8 @@ public class LevelBuilder : MonoBehaviour
             controller.height = Mathf.Clamp(controller.height > 0f ? controller.height : 1.82f, 1.72f, 1.88f);
             controller.center = new Vector3(0f, controller.height * 0.5f, 0f);
             controller.skinWidth = Mathf.Clamp(controller.skinWidth, 0.04f, 0.07f);
-            controller.stepOffset = Mathf.Clamp(controller.stepOffset, 0.45f, 0.58f);
-            controller.slopeLimit = Mathf.Clamp(controller.slopeLimit, 55f, 65f);
+            controller.stepOffset = Mathf.Max(0.5f, controller.stepOffset);
+            controller.slopeLimit = Mathf.Max(60f, controller.slopeLimit);
         }
 
         CapsuleCollider[] capsules = playerController.GetComponentsInChildren<CapsuleCollider>(true);

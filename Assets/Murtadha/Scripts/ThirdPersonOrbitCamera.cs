@@ -604,10 +604,30 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
             return candidate;
 
         Vector3 direction = fromPivot / distance;
+
+        // 1. Raycast guard: If a ray from pivot to candidate hits a wall, we must be behind it!
+        RaycastHit hit;
+        // Start raycast slightly offset from pivot to prevent starting inside player/pivot colliders
+        Vector3 rayStart = pivot + direction * 0.1f;
+        float rayLength = Mathf.Max(0f, distance - 0.1f);
+        if (rayLength > 0f && Physics.Raycast(rayStart, direction, out hit, rayLength, collisionMask, QueryTriggerInteraction.Ignore))
+        {
+            if (hit.collider != null && !IsExcludedCollisionCollider(hit.collider) && (target == null || !hit.collider.transform.IsChildOf(target)))
+            {
+                float hitDist = Vector3.Distance(pivot, hit.point);
+                float safeDist = Mathf.Max(AbsoluteCollisionMinDistance, hitDist - GetEffectiveWallPadding());
+                candidate = pivot + direction * safeDist;
+                distance = safeDist;
+                _currentDistance = Mathf.Min(_currentDistance, safeDist);
+                _distanceVelocity = 0f;
+            }
+        }
+
+        // 2. Overlap containment: Pull inward iteratively if we overlap solid geometry
         float radius = GetContainmentRadius();
         for (int i = 0; i < 8 && HasSolidOverlap(candidate, radius); i++)
         {
-            distance = Mathf.Max(AbsoluteCollisionMinDistance, distance - (radius * 0.5f));
+            distance = Mathf.Max(AbsoluteCollisionMinDistance, distance - (radius * 0.4f));
             candidate = pivot + direction * distance;
             _currentDistance = Mathf.Min(_currentDistance, distance);
             _distanceVelocity = 0f;
