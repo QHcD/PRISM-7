@@ -3651,13 +3651,31 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         float maxReferenceSpeed = Mathf.Max(0.01f, moveSpeed * sprintMultiplier);
         float planarSpeed = actualHorizontalVelocity.magnitude;
 
-        float normalizedSpeed;
-        if (moveInputRaw.sqrMagnitude < 0.0001f && moveInputSmoothed.sqrMagnitude < 0.0004f)
-            normalizedSpeed = 0f;
-        else
-            normalizedSpeed = Mathf.Clamp01(planarSpeed / maxReferenceSpeed);
+        bool effectivelyIdle = moveInputRaw.sqrMagnitude < 0.0001f
+                            && moveInputSmoothed.sqrMagnitude < 0.0004f;
+
+        float normalizedSpeed = effectivelyIdle
+            ? 0f
+            : Mathf.Clamp01(planarSpeed / maxReferenceSpeed);
+
+        // Local-space horizontal velocity drives the 2D Blend Tree.
+        // We use actualHorizontalVelocity (measured displacement) so the legs
+        // match real motion, not intent. During a turn-in the body has not yet
+        // rotated to face movement direction, so the local velocity has lateral
+        // components that correctly drive the strafe / backward blends.
+        float moveX = 0f;
+        float moveY = 0f;
+        if (!effectivelyIdle)
+        {
+            Vector3 localVel = transform.InverseTransformDirection(actualHorizontalVelocity);
+            moveX = Mathf.Clamp(localVel.x / maxReferenceSpeed, -1f, 1f);
+            moveY = Mathf.Clamp(localVel.z / maxReferenceSpeed, -1f, 1f);
+        }
 
         bool droveSpeedParameter = AnimSetFloat(anim, "Speed", normalizedSpeed, 0.1f);
+        AnimSetFloat(anim, "MoveX", moveX, 0.1f);
+        AnimSetFloat(anim, "MoveY", moveY, 0.1f);
+
         if (!droveSpeedParameter)
             ForceLocomotionState(anim, normalizedSpeed);
 
