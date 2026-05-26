@@ -452,6 +452,7 @@ public class EnemyController : MonoBehaviour, IDamageable
     private static readonly int HashAttack    = Animator.StringToHash("Attack");
     private static readonly int HashHit       = Animator.StringToHash("Hit");
     private static readonly int HashGrounded  = Animator.StringToHash("IsGrounded");
+    private static readonly int HashDeath     = Animator.StringToHash("Death");
     private const string WeaponSocketName     = "__EnemyWeaponSocket";
     private static readonly Color[] EnemyTintPalette =
     {
@@ -2536,11 +2537,20 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         CombatVoiceSfx.GetOrAdd(gameObject).PlayDeath();
 
-        EnableRagdoll();
+        if (_anim != null && _anim.isActiveAndEnabled)
+        {
+            SetAnimatorTrigger(HashDeath);
+            Invoke(nameof(EnableRagdoll), deathAnimDuration);
+        }
+        else
+        {
+            EnableRagdoll();
+        }
 
         // ── Corpse cleanup ────────────────────────────────────────────────────
-        if (ragdollVisibleDuration > 0f)
-            Destroy(gameObject, ragdollVisibleDuration);
+        float destroyDelay = deathAnimDuration + ragdollVisibleDuration;
+        if (destroyDelay > 0f)
+            Destroy(gameObject, destroyDelay);
     }
 
     private void DisableMovementAndCollisionForDeath()
