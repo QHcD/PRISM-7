@@ -155,6 +155,16 @@ public class CameraController : MonoBehaviour
     [Tooltip("External yaw in degrees (world-space). Only used when useExternalYaw is true.")]
     public float externalYaw = 0f;
 
+    [Header("Auto-Align Behind Player")]
+    public bool  autoAlignEnabled = true;
+    public float autoAlignDelayAfterManualInput = 0.75f;
+    public float autoAlignSmoothTime = 0.25f;
+    public float autoAlignMoveDeadzone = 0.15f;
+    public float autoAlignManualMouseThreshold = 0.01f;
+
+    private float _autoAlignYawVelocity;
+    private float _lastManualCameraInputTime = -999f;
+
     private void Awake()
     {
 #if PUN_2_OR_NEWER
@@ -363,6 +373,8 @@ public class CameraController : MonoBehaviour
         if (!IsFinite(_fieldOfViewVelocity))
             _fieldOfViewVelocity = 0f;
 
+        ApplyAutoAlignYaw();
+
         // ── Build orbit rotation ─────────────────────────────────────────────
         // Horizontal from the player's Y rotation, vertical from mouse pitch.
         float yaw = useExternalYaw ? externalYaw : target.eulerAngles.y;
@@ -393,6 +405,48 @@ public class CameraController : MonoBehaviour
         // ── Look at spine bone (never at empty space ahead of the player) ────
         if (IsFinite(lookTarget) && (lookTarget - transform.position).sqrMagnitude > 0.0001f)
             transform.LookAt(lookTarget);
+    }
+
+    private void ApplyAutoAlignYaw()
+    {
+        if (!autoAlignEnabled || !useExternalYaw || target == null)
+            return;
+
+        float mouseDx = 0f, mouseDy = 0f;
+        try { mouseDx = Input.GetAxis("Mouse X"); } catch { }
+        try { mouseDy = Input.GetAxis("Mouse Y"); } catch { }
+        if (Mathf.Abs(mouseDx) > autoAlignManualMouseThreshold ||
+            Mathf.Abs(mouseDy) > autoAlignManualMouseThreshold)
+        {
+            _lastManualCameraInputTime = Time.time;
+            _autoAlignYawVelocity = 0f;
+            return;
+        }
+
+        float h = 0f, v = 0f;
+        try { h = Input.GetAxisRaw("Horizontal"); } catch { }
+        try { v = Input.GetAxisRaw("Vertical"); } catch { }
+        float moveMag = Mathf.Sqrt(h * h + v * v);
+        if (moveMag < autoAlignMoveDeadzone)
+        {
+            _autoAlignYawVelocity = 0f;
+            return;
+        }
+
+        if (Time.time - _lastManualCameraInputTime < autoAlignDelayAfterManualInput)
+            return;
+
+        float forwardWeight = Mathf.Clamp01(v / Mathf.Max(0.0001f, moveMag));
+        if (forwardWeight <= 0.001f)
+        {
+            _autoAlignYawVelocity = 0f;
+            return;
+        }
+
+        float targetYaw = target.eulerAngles.y;
+        float smoothTime = Mathf.Max(0.001f, autoAlignSmoothTime / forwardWeight);
+        externalYaw = Mathf.SmoothDampAngle(
+            externalYaw, targetYaw, ref _autoAlignYawVelocity, smoothTime);
     }
 
     // ════════════════════════════════════════════════════════════════════════
