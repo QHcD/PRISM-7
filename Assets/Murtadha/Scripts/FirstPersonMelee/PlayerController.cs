@@ -2530,8 +2530,6 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
                 _tacticalActions.SetProne(true);
             else
                 EnterLowProfileStance();
-            Animator anim = GetActiveAnimator();
-            if (anim != null) AnimSetBool(anim, "IsProne", true);
         }
         else
         {
@@ -2541,9 +2539,6 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
                 FlushLowProfileGroundSnap(forceZeroMove: true);
 
             RestoreProneVisualPose();
-
-            Animator anim = GetActiveAnimator();
-            if (anim != null) AnimSetBool(anim, "IsProne", false);
         }
     }
 
@@ -3653,45 +3648,23 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         ConfigureAnimatorBinding(anim, forceControllerAssignment: false);
         if (anim.runtimeAnimatorController == null) return;
 
-        // Use input magnitude so Speed snaps to 0 immediately when keys are released,
-        // preventing residual physics velocity keeping the Run animation active while standing still.
-        float normalizedSpeed = moveInputSmoothed.sqrMagnitude > 0.01f
-            ? Mathf.Clamp01(moveInputSmoothed.magnitude)
-            : 0f;
+        float maxReferenceSpeed = Mathf.Max(0.01f, moveSpeed * sprintMultiplier);
+        float planarSpeed = actualHorizontalVelocity.magnitude;
 
-        // ── Locomotion (Float) ──────────────────────────────────────────────
+        float normalizedSpeed;
+        if (moveInputRaw.sqrMagnitude < 0.0001f && moveInputSmoothed.sqrMagnitude < 0.0004f)
+            normalizedSpeed = 0f;
+        else
+            normalizedSpeed = Mathf.Clamp01(planarSpeed / maxReferenceSpeed);
+
         bool droveSpeedParameter = AnimSetFloat(anim, "Speed", normalizedSpeed, 0.1f);
         if (!droveSpeedParameter)
             ForceLocomotionState(anim, normalizedSpeed);
 
-        // ── Bool params (Player Controller.controller style) ────────────────
         AnimSetBool(anim, "IsAttacking", isAttacking);
-        AnimSetBool(anim, "IsGrounded",  isGrounded || IsGroundedForJump());
+        AnimSetBool(anim, "IsGrounded", isGrounded || IsGroundedForJump());
         AnimSetBool(anim, "IsSprinting", isSprinting);
-        AnimSetBool(anim, "IsProne", isProne);
-        AnimSetBool(anim, "IsSliding", isSliding);
-
-        // ── Trigger params (CrosbyAnimator style) ───────────────────────────
-        // Fire Attack trigger on the frame isAttacking becomes true.
-        // Also fire the category-specific trigger (Attack_Light, Attack_Sword,
-        // ...) when present on the controller. Falls back silently to the
-        // generic Attack trigger if no category trigger is wired yet.
-        if (isAttacking && !_wasAttackingLastFrame)
-        {
-            AnimFireTrigger(anim, WeaponAnimationCategories.GenericAttackTrigger);
-
-            int weaponLevel = GetEquippedWeaponLevel();
-            WeaponAnimationCategory category = WeaponAnimationCategories.ForLevel(weaponLevel);
-            string categoryTrigger = WeaponAnimationCategories.GetAttackTrigger(category);
-            if (!string.IsNullOrEmpty(categoryTrigger)
-                && categoryTrigger != WeaponAnimationCategories.GenericAttackTrigger)
-            {
-                AnimFireTrigger(anim, categoryTrigger);
-            }
-        }
-        _wasAttackingLastFrame = isAttacking;
     }
-    private bool _wasAttackingLastFrame;
 
     // ── Direct, timing-safe param helpers ────────────────────────────────────
     // Query animator.parameters every call — no HashSet that can be stale.
@@ -3771,18 +3744,10 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
         targetAnimator.applyRootMotion = false;
 
-        // ── Resolve controller ────────────────────────────────────────────────
-        // Priority 1: Inspector-assigned playerAnimatorController
-        // Priority 2: Auto-load CrosbyAnimator (same controller used by all enemies)
         RuntimeAnimatorController resolvedCtrl = playerAnimatorController;
-        if (resolvedCtrl == null)
-            resolvedCtrl = Resources.Load<RuntimeAnimatorController>("Enemy/CrosbyAnimator");
-
         if (resolvedCtrl != null &&
             (forceControllerAssignment || targetAnimator.runtimeAnimatorController == null))
-        {
             targetAnimator.runtimeAnimatorController = resolvedCtrl;
-        }
 
         // ── Resolve avatar ────────────────────────────────────────────────────
         if (playerAvatar != null &&
@@ -3798,8 +3763,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             _animatorMissingWarned = true;
             Debug.LogWarning(
                 "[PlayerController] No animator controller could be resolved. " +
-                "Assign one to 'playerAnimatorController' in the Inspector, or ensure " +
-                "Resources/Enemy/CrosbyAnimator exists.",
+                "Assign one to 'playerAnimatorController' in the Inspector.",
                 targetAnimator);
         }
     }

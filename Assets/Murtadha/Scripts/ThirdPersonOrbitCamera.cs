@@ -147,6 +147,12 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
     [Tooltip("Draw the collision SphereCast as a Gizmo in the Scene view.")]
     public bool debugDrawCollision = false;
 
+    [Header("Auto-Align Behind Movement")]
+    public bool autoAlignToMovement = true;
+    public float autoAlignDelay = 0.35f;
+    public float autoAlignSpeed = 8f;
+    public float minMoveMagnitudeForAutoAlign = 0.15f;
+
     // ─────────────────────────────────────────────────────────────────────────
     // PRIVATE STATE
     // ─────────────────────────────────────────────────────────────────────────
@@ -154,6 +160,14 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
     // Current orbit angles (degrees)
     private float _yaw;
     private float _pitch;
+
+    private float _lastManualCameraInputTime = -999f;
+    private float _autoAlignYawVelocity;
+    private Vector3 _autoAlignLastTargetPos;
+    private bool _autoAlignTargetPosInitialized;
+    private CharacterController _cachedCharacterController;
+    private Rigidbody _cachedRigidbody;
+    private Transform _cachedVelocitySource;
 
     // SmoothDamp state for pivot follow
     private Vector3 _smoothedPivot;
@@ -373,6 +387,7 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
         }
         EnforceCollisionSafetySettings();
 
+        ApplyAutoAlignYaw();
         UpdateSmoothedPivot();
 
         // Step 3: Compute desired camera position from pivot + orbit rotation
@@ -409,6 +424,13 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
             mouseY = mouseDelta.y * 0.05f;
         }
 
+        Vector2 stick = UnityEngine.InputSystem.Gamepad.current != null
+            ? UnityEngine.InputSystem.Gamepad.current.rightStick.ReadValue()
+            : Vector2.zero;
+
+        if (Mathf.Abs(mouseX) > 0.0001f || Mathf.Abs(mouseY) > 0.0001f || stick.sqrMagnitude > 0.01f)
+            _lastManualCameraInputTime = Time.time;
+
         // Apply sensitivity (the GetAxis value is already framerate-independent
         // when Sensitivity is set to 1 in the Input Manager, but multiply it
         // here so the Inspector knob is the single source of truth).
@@ -420,6 +442,89 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
 
         // Wrap yaw to [0, 360] so it never overflows to infinity over long sessions.
         _yaw = (_yaw % 360f + 360f) % 360f;
+    }
+
+    private void ApplyAutoAlignYaw()
+    {
+        if (!autoAlignToMovement || target == null)
+        {
+            _autoAlignTargetPosInitialized = false;
+            return;
+        }
+
+        if (Time.time - _lastManualCameraInputTime < Mathf.Max(0f, autoAlignDelay))
+        {
+            _autoAlignYawVelocity = 0f;
+            return;
+        }
+
+        Transform velocitySource = target;
+        if (_cachedVelocitySource != velocitySource)
+        {
+            _cachedVelocitySource = velocitySource;
+            _cachedCharacterController = velocitySource.GetComponent<CharacterController>();
+            _cachedRigidbody = velocitySource.GetComponent<Rigidbody>();
+        }
+
+        Vector3 pos = velocitySource.position;
+        if (!_autoAlignTargetPosInitialized)
+        {
+            _autoAlignLastTargetPos = pos;
+            _autoAlignTargetPosInitialized = true;
+            return;
+        }
+
+        float dt = Mathf.Max(0.0001f, Time.deltaTime);
+        Vector3 delta = pos - _autoAlignLastTargetPos;
+        _autoAlignLastTargetPos = pos;
+        delta.y = 0f;
+
+        Vector3 moveDir = ResolveMovementDirection(delta, dt, out float speed);
+        if (speed < Mathf.Max(0.01f, minMoveMagnitudeForAutoAlign) || moveDir.sqrMagnitude < 0.0001f)
+        {
+            _autoAlignYawVelocity = 0f;
+            return;
+        }
+
+        float targetYaw = Quaternion.LookRotation(moveDir, Vector3.up).eulerAngles.y;
+        float smoothTime = autoAlignSpeed > 0.001f ? (1f / autoAlignSpeed) : 0.25f;
+        _yaw = Mathf.SmoothDampAngle(_yaw, targetYaw, ref _autoAlignYawVelocity, Mathf.Max(0.01f, smoothTime));
+        _yaw = (_yaw % 360f + 360f) % 360f;
+    }
+
+    private Vector3 ResolveMovementDirection(Vector3 positionDelta, float dt, out float horizontalSpeed)
+    {
+        if (_cachedCharacterController != null && _cachedCharacterController.enabled)
+        {
+            Vector3 v = _cachedCharacterController.velocity;
+            v.y = 0f;
+            float m = v.magnitude;
+            if (m > 0.05f)
+            {
+                horizontalSpeed = m;
+                return v / m;
+            }
+        }
+
+        if (_cachedRigidbody != null && !_cachedRigidbody.isKinematic)
+        {
+#if UNITY_6000_0_OR_NEWER
+            Vector3 v = _cachedRigidbody.linearVelocity;
+#else
+            Vector3 v = _cachedRigidbody.velocity;
+#endif
+            v.y = 0f;
+            float m = v.magnitude;
+            if (m > 0.05f)
+            {
+                horizontalSpeed = m;
+                return v / m;
+            }
+        }
+
+        float mag = positionDelta.magnitude;
+        horizontalSpeed = mag / dt;
+        return mag > 0.0001f ? (positionDelta / mag) : Vector3.zero;
     }
 
     // ─────────────────────────────────────────────────────────────────────────

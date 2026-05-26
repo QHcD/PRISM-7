@@ -163,10 +163,28 @@ public class CameraController : MonoBehaviour
     public float autoAlignMoveDeadzone = 0.15f;
     public float autoAlignManualMouseThreshold = 1.5f;
 
+    [Tooltip("When true, the camera tracks the player's actual world-space movement direction (velocity vector). " +
+             "When false, falls back to the player's facing yaw — kept for back-compat.")]
+    public bool autoAlignToMovement = true;
+
+    [Tooltip("Alias for autoAlignDelayAfterManualInput exposed under the spec-requested name.")]
+    public float autoAlignDelay = 0.35f;
+
+    [Tooltip("Auto-align response in 'per second' units. Effective smooth time used = max(autoAlignSmoothTime, 1f / autoAlignSpeed). " +
+             "Higher = camera snaps behind movement faster.")]
+    public float autoAlignSpeed = 8f;
+
+    [Tooltip("Minimum world-units/second movement magnitude before auto-align engages. " +
+             "Prevents micro-jitter / stick drift from rotating the camera.")]
+    public float minMoveMagnitudeForAutoAlign = 0.15f;
+
     private float _autoAlignYawVelocity;
     private float _lastManualCameraInputTime = -999f;
     private Vector3 _autoAlignLastTargetPos;
     private bool _autoAlignTargetPosInitialized;
+    private CharacterController _cachedTargetCharacterController;
+    private Rigidbody _cachedTargetRigidbody;
+    private Transform _cachedVelocitySourceTransform;
 
     private void Awake()
     {
@@ -435,39 +453,106 @@ public class CameraController : MonoBehaviour
         }
 
         PlayerController pcVel = target.GetComponentInParent<PlayerController>();
-        Vector3 targetPos = pcVel != null ? pcVel.transform.position : target.position;
+        Transform velocitySource = pcVel != null ? pcVel.transform : target;
+        Vector3 targetPos = velocitySource.position;
         if (!_autoAlignTargetPosInitialized)
         {
             _autoAlignLastTargetPos = targetPos;
             _autoAlignTargetPosInitialized = true;
+            RefreshCachedVelocitySources(velocitySource);
             return;
         }
+
+        if (_cachedVelocitySourceTransform != velocitySource)
+            RefreshCachedVelocitySources(velocitySource);
 
         float dt = Mathf.Max(0.0001f, Time.deltaTime);
-        Vector3 delta = targetPos - _autoAlignLastTargetPos;
+        Vector3 positionDelta = targetPos - _autoAlignLastTargetPos;
         _autoAlignLastTargetPos = targetPos;
-        delta.y = 0f;
-        float speed = delta.magnitude / dt;
-        if (speed < Mathf.Max(0.05f, autoAlignMoveDeadzone))
+        positionDelta.y = 0f;
+
+        Vector3 moveDirection = ResolveMovementDirection(positionDelta, dt, out float moveSpeed);
+
+        float effectiveDeadzone = Mathf.Max(
+            autoAlignMoveDeadzone > 0f ? autoAlignMoveDeadzone : 0.05f,
+            minMoveMagnitudeForAutoAlign > 0f ? minMoveMagnitudeForAutoAlign : 0f);
+
+        if (moveSpeed < effectiveDeadzone || moveDirection.sqrMagnitude < 0.0001f)
         {
             _autoAlignYawVelocity = 0f;
             return;
         }
 
-        if (Time.time - _lastManualCameraInputTime < autoAlignDelayAfterManualInput)
+        float effectiveDelay = Mathf.Max(autoAlignDelayAfterManualInput, autoAlignDelay);
+        if (Time.time - _lastManualCameraInputTime < effectiveDelay)
         {
             _autoAlignYawVelocity = 0f;
             return;
         }
 
-        PlayerController pc = target.GetComponentInParent<PlayerController>();
-        float targetYaw = pc != null ? pc.transform.eulerAngles.y : target.eulerAngles.y;
+        PlayerController pc = pcVel;
+
+        float targetYaw;
+        if (autoAlignToMovement)
+        {
+            targetYaw = Mathf.Atan2(moveDirection.x, moveDirection.z) * Mathf.Rad2Deg;
+        }
+        else
+        {
+            targetYaw = pc != null ? pc.transform.eulerAngles.y : target.eulerAngles.y;
+        }
+
+        float smoothTimeFromSpeed = autoAlignSpeed > 0.001f ? (1f / autoAlignSpeed) : autoAlignSmoothTime;
+        float effectiveSmoothTime = Mathf.Max(0.01f, Mathf.Min(autoAlignSmoothTime, smoothTimeFromSpeed));
+
         externalYaw = Mathf.SmoothDampAngle(
-            externalYaw, targetYaw, ref _autoAlignYawVelocity,
-            Mathf.Max(0.01f, autoAlignSmoothTime));
+            externalYaw, targetYaw, ref _autoAlignYawVelocity, effectiveSmoothTime);
 
         if (pc != null)
             pc.SetOrbitYaw(externalYaw);
+    }
+
+    private void RefreshCachedVelocitySources(Transform velocitySource)
+    {
+        _cachedVelocitySourceTransform = velocitySource;
+        _cachedTargetCharacterController = velocitySource != null ? velocitySource.GetComponent<CharacterController>() : null;
+        _cachedTargetRigidbody = velocitySource != null ? velocitySource.GetComponent<Rigidbody>() : null;
+    }
+
+    private Vector3 ResolveMovementDirection(Vector3 positionDelta, float dt, out float horizontalSpeed)
+    {
+        if (_cachedTargetCharacterController != null && _cachedTargetCharacterController.enabled)
+        {
+            Vector3 ccv = _cachedTargetCharacterController.velocity;
+            ccv.y = 0f;
+            float ccm = ccv.magnitude;
+            if (ccm > 0.05f)
+            {
+                horizontalSpeed = ccm;
+                return ccv / ccm;
+            }
+        }
+
+        if (_cachedTargetRigidbody != null && !_cachedTargetRigidbody.isKinematic)
+        {
+#if UNITY_6000_0_OR_NEWER
+            Vector3 rbv = _cachedTargetRigidbody.linearVelocity;
+#else
+            Vector3 rbv = _cachedTargetRigidbody.velocity;
+#endif
+            rbv.y = 0f;
+            float rbm = rbv.magnitude;
+            if (rbm > 0.05f)
+            {
+                horizontalSpeed = rbm;
+                return rbv / rbm;
+            }
+        }
+
+        float deltaMag = positionDelta.magnitude;
+        horizontalSpeed = deltaMag / dt;
+        if (deltaMag < 0.0001f) return Vector3.zero;
+        return positionDelta / deltaMag;
     }
 
     // ════════════════════════════════════════════════════════════════════════
