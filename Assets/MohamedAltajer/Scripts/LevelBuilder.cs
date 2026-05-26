@@ -75,7 +75,7 @@ public class LevelBuilder : MonoBehaviour
 
     [Header("Enemy spawn spacing")]
     [Tooltip("Preferred minimum horizontal distance between enemy spawn positions.")]
-    public float minEnemySpawnSpacing = 4f;
+    public float minEnemySpawnSpacing = 6f;
     [Tooltip("Minimum horizontal distance from the player at spawn time. " +
              "Prevents enemies materialising on top of the player.")]
     public float minEnemyToPlayerDistance = 12f;
@@ -84,7 +84,7 @@ public class LevelBuilder : MonoBehaviour
     [Tooltip("Logs zone/tier per enemy spawn and draws zone gizmos when enabled.")]
     public bool debugEnemySpawnDistribution = false;
 
-    private const float MinEnemySpawnHardFloor = 2f;
+    private const float MinEnemySpawnHardFloor = 5f;
     private const float MaxNavSnapHorizontalDrift = 14f;
     private const int MaxEnemiesPerSpawnZone = 2;
     private const int SpawnZoneCount = 9;
@@ -2828,6 +2828,15 @@ public class LevelBuilder : MonoBehaviour
                 GameManager.Instance.InitializeEnemyCount(0);
             return;
         }
+
+        ShuffleAnchors(arenaAnchors);
+        for (int zi = 0; zi < spawnZones.Length; zi++)
+        {
+            if (spawnZones[zi] != null)
+                ShuffleAnchors(spawnZones[zi].Anchors);
+        }
+        ShuffleZones(spawnZones);
+
         int[] zoneCounts = new int[SpawnZoneCount];
         NavMeshPath spawnPath = new NavMeshPath();
         var placedPositions = new System.Collections.Generic.List<Vector3>(enemyCount);
@@ -5410,6 +5419,30 @@ public class LevelBuilder : MonoBehaviour
             T temp = values[i];
             values[i] = values[j];
             values[j] = temp;
+        }
+    }
+
+    private static void ShuffleAnchors(System.Collections.Generic.List<Vector3> list)
+    {
+        if (list == null) return;
+        for (int i = list.Count - 1; i > 0; i--)
+        {
+            int j = Random.Range(0, i + 1);
+            Vector3 tmp = list[i];
+            list[i] = list[j];
+            list[j] = tmp;
+        }
+    }
+
+    private static void ShuffleZones(EnemySpawnZone[] zones)
+    {
+        if (zones == null) return;
+        for (int i = zones.Length - 1; i > 0; i--)
+        {
+            int j = Random.Range(0, i + 1);
+            EnemySpawnZone tmp = zones[i];
+            zones[i] = zones[j];
+            zones[j] = tmp;
         }
     }
 
