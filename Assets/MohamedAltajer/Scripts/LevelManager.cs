@@ -59,6 +59,9 @@ public class LevelManager : MonoBehaviour
         if (!Application.isPlaying) return;
         if (scene.name == MainMenuSceneName) return;
 
+        GameplayCameraBootstrap.FlushAllTargetCaches();
+        GameplayCameraBootstrap.TryBindActiveGameplayCamera();
+
         if (_sceneSafetyRoutine != null)
             StopCoroutine(_sceneSafetyRoutine);
         _sceneSafetyRoutine = StartCoroutine(SceneSafetySequence());
@@ -80,17 +83,23 @@ public class LevelManager : MonoBehaviour
 
     private IEnumerator SceneSafetySequence()
     {
+        GameplayCameraBootstrap.TryBindActiveGameplayCamera();
+
         if (LevelBuilder.Instance != null)
         {
             float deadline = Time.realtimeSinceStartup + WatchdogDurationSeconds;
             while (!LevelBuilder.IsRuntimeLevelReady && Time.realtimeSinceStartup < deadline)
+            {
+                GameplayCameraBootstrap.TryBindActiveGameplayCamera();
                 yield return null;
+            }
             if (!LevelBuilder.IsRuntimeLevelReady)
                 Debug.LogWarning("[LevelManager] Spawn watchdog continuing after runtime readiness timeout.");
         }
 
         StabilizeEnvironment();
         ForcePlayerToInterior();
+        GameplayCameraBootstrap.TryBindActiveGameplayCamera();
         _spawnWatchdog = StartCoroutine(SpawnSafetyWatchdog());
         _sceneSafetyRoutine = null;
     }
@@ -117,6 +126,8 @@ public class LevelManager : MonoBehaviour
         {
             Debug.Log($"[SciFiSpawn] LevelManager: forced to {spawn}");
             LevelInteriorSpawnResolver.ApplyExternalSpawn(player, spawn);
+            Physics.SyncTransforms();
+            GameplayCameraBootstrap.BindActiveGameplayCamera(player.transform);
         }
     }
 
@@ -159,6 +170,8 @@ public class LevelManager : MonoBehaviour
             {
                 Debug.Log($"[SciFiSpawn] LevelManager watchdog: rescued to {interiorTarget}");
                 LevelInteriorSpawnResolver.ApplyExternalSpawn(player, interiorTarget);
+                Physics.SyncTransforms();
+                GameplayCameraBootstrap.BindActiveGameplayCamera(player.transform);
                 return true;
             }
 
@@ -171,6 +184,8 @@ public class LevelManager : MonoBehaviour
         if (LevelInteriorSpawnResolver.TryResolveSceneSpawn(player, out Vector3 safeTarget))
         {
             LevelInteriorSpawnResolver.ApplyExternalSpawn(player, safeTarget);
+            Physics.SyncTransforms();
+            GameplayCameraBootstrap.BindActiveGameplayCamera(player.transform);
             return true;
         }
 

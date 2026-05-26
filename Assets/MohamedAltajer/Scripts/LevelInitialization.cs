@@ -33,11 +33,14 @@ public class LevelInitialization : MonoBehaviour
         if (!Application.isPlaying) return;
         StopLobbyMusicForGameplay(scene.name);
         if (scene.name == MainMenuSceneName) return;
+        GameplayCameraBootstrap.FlushAllTargetCaches();
+        GameplayCameraBootstrap.TryBindActiveGameplayCamera();
         StartCoroutine(InitSequence());
     }
 
     private IEnumerator InitSequence()
     {
+        GameplayCameraBootstrap.TryBindActiveGameplayCamera();
         AuditLevelColliders();
         Physics.SyncTransforms();
 
@@ -54,7 +57,10 @@ public class LevelInitialization : MonoBehaviour
             while ((!LevelBuilder.IsRuntimeLevelReady
                     || (LevelInteriorSpawnResolver.RequiresInteriorSpawn && !LevelBuilder.IsRuntimeNavMeshReady))
                    && Time.realtimeSinceStartup < deadline)
+            {
+                GameplayCameraBootstrap.TryBindActiveGameplayCamera();
                 yield return null;
+            }
             if (!LevelBuilder.IsRuntimeLevelReady
                 || (LevelInteriorSpawnResolver.RequiresInteriorSpawn && !LevelBuilder.IsRuntimeNavMeshReady))
                 Debug.LogWarning("[LevelInitialization] Continuing player initialization after runtime readiness timeout.");
@@ -118,16 +124,15 @@ public class LevelInitialization : MonoBehaviour
 
         Debug.Log($"[SciFiSpawn] LevelInitialization: spawning player at {spawn} (was {currentPos})");
         LevelInteriorSpawnResolver.ApplyExternalSpawn(player, spawn);
+        Physics.SyncTransforms();
+        GameplayCameraBootstrap.BindActiveGameplayCamera(player.transform);
     }
 
     private static void BindCameraToPlayer()
     {
-        CameraController cam = Object.FindFirstObjectByType<CameraController>();
-        if (cam == null) return;
         PlayerController player = Object.FindFirstObjectByType<PlayerController>();
         if (player == null) return;
-        cam.target = player.transform;
-        cam.SnapToTarget();
+        GameplayCameraBootstrap.BindActiveGameplayCamera(player.transform);
     }
 
     private static void ForceWeaponReattach()

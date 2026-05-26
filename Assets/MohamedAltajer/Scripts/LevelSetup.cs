@@ -6,6 +6,15 @@ public class LevelSetup : MonoBehaviour
     public PlayerController player;
     public Camera gameplayCamera;
 
+    private void Awake()
+    {
+        if (!Application.isPlaying)
+            return;
+
+        GameplayCameraBootstrap.FlushAllTargetCaches();
+        GameplayCameraBootstrap.TryBindActiveGameplayCamera();
+    }
+
     private IEnumerator Start()
     {
         if (Application.isPlaying && LevelBuilder.Instance != null)
@@ -14,7 +23,10 @@ public class LevelSetup : MonoBehaviour
             while ((!LevelBuilder.IsRuntimeLevelReady
                     || (LevelInteriorSpawnResolver.RequiresInteriorSpawn && !LevelBuilder.IsRuntimeNavMeshReady))
                    && Time.realtimeSinceStartup < deadline)
+            {
+                GameplayCameraBootstrap.TryBindActiveGameplayCamera();
                 yield return null;
+            }
             if (!LevelBuilder.IsRuntimeLevelReady
                 || (LevelInteriorSpawnResolver.RequiresInteriorSpawn && !LevelBuilder.IsRuntimeNavMeshReady))
                 Debug.LogWarning("[LevelSetup] Continuing setup after runtime readiness timeout.");
@@ -28,12 +40,12 @@ public class LevelSetup : MonoBehaviour
         try
         {
             EnsurePlayer();
-            EnsureCamera();
             EnsureGroundVisible();
             StabilizeEnvironment();
             StabilizeSceneStructures();
             DestroyHeavyLevelProps();
             ForceFallbackSpawnIfNeeded();
+            EnsureCamera();
             TryInitializeOptionalAISystems();
         }
         catch (System.Exception e)
@@ -85,6 +97,7 @@ public class LevelSetup : MonoBehaviour
 
             cameraController.target = player.transform;
             cameraController.SnapToTarget();
+            GameplayCameraBootstrap.BindActiveGameplayCamera(player.transform);
         }
     }
 
@@ -113,6 +126,8 @@ public class LevelSetup : MonoBehaviour
         {
             Debug.Log($"[SciFiSpawn] LevelSetup: resolved to {spawn}");
             LevelInteriorSpawnResolver.ApplyExternalSpawn(player, spawn);
+            Physics.SyncTransforms();
+            GameplayCameraBootstrap.BindActiveGameplayCamera(player.transform);
 
             if (gameplayCamera != null)
             {

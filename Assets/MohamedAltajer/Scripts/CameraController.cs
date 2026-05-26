@@ -210,9 +210,8 @@ public class CameraController : MonoBehaviour
 
     private void HandleSceneLoaded(UnityEngine.SceneManagement.Scene scene, UnityEngine.SceneManagement.LoadSceneMode mode)
     {
-        target = null;
-        _lookTargetInitialized = false;
-        ResolvePlayerTarget();
+        ClearTargetCache();
+        GameplayCameraBootstrap.TryBindActiveGameplayCamera();
         Camera cam = GetComponent<Camera>();
         if (cam != null)
             cam.enabled = true;
@@ -228,7 +227,7 @@ public class CameraController : MonoBehaviour
         for (int attempt = 0; attempt < 5; attempt++)
         {
             yield return null;
-            if (target == null) ResolvePlayerTarget();
+            if (target == null) GameplayCameraBootstrap.TryBindActiveGameplayCamera();
             if (target != null)
             {
                 _lookTargetInitialized = false;
@@ -238,7 +237,7 @@ public class CameraController : MonoBehaviour
             }
         }
         yield return new WaitForEndOfFrame();
-        if (target == null) ResolvePlayerTarget();
+        if (target == null) GameplayCameraBootstrap.TryBindActiveGameplayCamera();
         if (target != null)
         {
             _lookTargetInitialized = false;
@@ -289,20 +288,9 @@ public class CameraController : MonoBehaviour
     private void ResolvePlayerTarget()
     {
         if (target != null) return;
-        PlayerController pc = Object.FindFirstObjectByType<PlayerController>();
-        if (pc != null)
-        {
-            target = pc.transform;
-            Debug.Log($"[CameraTarget] Resolved camera target authoritative transform: {target.name} via PlayerController.");
-            return;
-        }
-
-        GameObject playerGo = GameObject.FindWithTag("Player");
-        if (playerGo != null)
-        {
-            target = playerGo.transform;
-            Debug.Log($"[CameraTarget] Resolved camera target transform: {target.name} via Tag fallback.");
-        }
+        Transform resolved = GameplayCameraBootstrap.ResolveAuthoritativePlayerTarget();
+        if (resolved != null)
+            BindAuthoritativeTarget(resolved);
     }
 
     private void Start()
@@ -343,13 +331,10 @@ public class CameraController : MonoBehaviour
         // Auto-find player if target is missing
         if (target == null)
         {
-            GameObject player = GameObject.FindWithTag("Player");
-            if (player != null)
-            {
-                target = player.transform;
-                SnapToTarget();
-            }
-            return;
+            if (!GameplayCameraBootstrap.TryBindActiveGameplayCamera())
+                return;
+            if (target == null)
+                return;
         }
 
         // ── Defensive pitch clamp ────────────────────────────────────────────
@@ -565,6 +550,35 @@ public class CameraController : MonoBehaviour
         // Method kept for API compatibility.
     }
 
+    public void ClearTargetCache()
+    {
+        target = null;
+        _lookTargetInitialized = false;
+        _positionVelocity = Vector3.zero;
+        _distanceVelocity = 0f;
+        _fieldOfViewVelocity = 0f;
+        _closeSpaceActive = false;
+    }
+
+    public void BindAuthoritativeTarget(Transform newTarget)
+    {
+        if (newTarget == null) return;
+
+        target = newTarget;
+        useExternalYaw = false;
+        externalYaw = target.eulerAngles.y;
+        pitch = Mathf.Clamp(8f, minPitch, maxPitch);
+        _lookTargetInitialized = false;
+        _positionVelocity = Vector3.zero;
+        _distanceVelocity = 0f;
+        _fieldOfViewVelocity = 0f;
+        _closeSpaceActive = false;
+        _currentDistance = GetCurrentOffset().magnitude;
+        collisionMask = BuildSolidCameraMask();
+        collisionMask &= ~(1 << target.gameObject.layer);
+        SnapToTarget();
+    }
+
     /// <summary>Instantly snaps the camera to its desired position (call on scene load).</summary>
     public void SnapToTarget()
     {
@@ -709,5 +723,191 @@ public class CameraController : MonoBehaviour
     {
         int namedLayer = LayerMask.NameToLayer(layerName);
         return namedLayer >= 0 && layer == namedLayer;
+    }
+}
+
+public static class GameplayCameraBootstrap
+{
+    public static void FlushAllTargetCaches()
+    {
+        CameraController[] controllers = Object.FindObjectsByType<CameraController>(
+            FindObjectsInactive.Include,
+            FindObjectsSortMode.None);
+        for (int i = 0; i < controllers.Length; i++)
+        {
+            if (controllers[i] != null)
+                controllers[i].ClearTargetCache();
+        }
+
+        ThirdPersonOrbitCamera[] orbitCameras = Object.FindObjectsByType<ThirdPersonOrbitCamera>(
+            FindObjectsInactive.Include,
+            FindObjectsSortMode.None);
+        for (int i = 0; i < orbitCameras.Length; i++)
+        {
+            if (orbitCameras[i] != null)
+                orbitCameras[i].ClearTargetCache();
+        }
+    }
+
+    public static bool TryBindActiveGameplayCamera()
+    {
+        Transform target = ResolveAuthoritativePlayerTarget();
+        return BindActiveGameplayCamera(target);
+    }
+
+    public static bool BindActiveGameplayCamera(Transform target)
+    {
+        if (target == null)
+            return false;
+
+        Physics.SyncTransforms();
+        bool bound = false;
+
+        CameraController[] controllers = Object.FindObjectsByType<CameraController>(
+            FindObjectsInactive.Include,
+            FindObjectsSortMode.None);
+        for (int i = 0; i < controllers.Length; i++)
+        {
+            CameraController controller = controllers[i];
+            if (controller == null)
+                continue;
+            if (!controller.gameObject.activeInHierarchy)
+                continue;
+            if (!IsLocalCamera(controller.transform))
+                continue;
+
+            controller.BindAuthoritativeTarget(target);
+            bound = true;
+        }
+
+        ThirdPersonOrbitCamera[] orbitCameras = Object.FindObjectsByType<ThirdPersonOrbitCamera>(
+            FindObjectsInactive.Include,
+            FindObjectsSortMode.None);
+        for (int i = 0; i < orbitCameras.Length; i++)
+        {
+            ThirdPersonOrbitCamera orbitCamera = orbitCameras[i];
+            if (orbitCamera == null)
+                continue;
+            if (!orbitCamera.gameObject.activeInHierarchy)
+                continue;
+            if (!IsLocalCamera(orbitCamera.transform))
+                continue;
+
+            orbitCamera.BindAuthoritativeTarget(target);
+            bound = true;
+        }
+
+        Camera camera = ResolveGameplayCamera(target);
+        if (camera != null)
+        {
+            if (!camera.gameObject.CompareTag("MainCamera"))
+                camera.gameObject.tag = "MainCamera";
+            camera.enabled = true;
+
+            CameraController controller = camera.GetComponent<CameraController>();
+            if (controller != null && !bound)
+            {
+                controller.BindAuthoritativeTarget(target);
+                bound = true;
+            }
+
+            ThirdPersonOrbitCamera orbitCamera = camera.GetComponent<ThirdPersonOrbitCamera>();
+            if (orbitCamera != null && !bound)
+            {
+                orbitCamera.BindAuthoritativeTarget(target);
+                bound = true;
+            }
+        }
+
+        return bound;
+    }
+
+    public static Transform ResolveAuthoritativePlayerTarget()
+    {
+        PlayerController[] players = Object.FindObjectsByType<PlayerController>(
+            FindObjectsInactive.Exclude,
+            FindObjectsSortMode.None);
+        PlayerController best = null;
+        int bestScore = int.MinValue;
+
+        for (int i = 0; i < players.Length; i++)
+        {
+            PlayerController player = players[i];
+            if (player == null || !player.gameObject.activeInHierarchy)
+                continue;
+            if (!IsLocalPlayer(player.transform))
+                continue;
+
+            int score = 0;
+            string name = player.gameObject.name;
+            if (!string.IsNullOrEmpty(name)
+                && name.IndexOf("Black Player", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                score += 1000;
+            if (player.CompareTag("Player"))
+                score += 100;
+            if (player.enabled)
+                score += 10;
+            if (player.ActiveCamera != null)
+                score += 5;
+
+            if (score > bestScore)
+            {
+                bestScore = score;
+                best = player;
+            }
+        }
+
+        if (best != null)
+            return best.transform;
+
+        GameObject tagged = null;
+        try
+        {
+            tagged = GameObject.FindWithTag("Player");
+        }
+        catch { }
+
+        return tagged != null && tagged.activeInHierarchy ? tagged.transform : null;
+    }
+
+    private static Camera ResolveGameplayCamera(Transform target)
+    {
+        PlayerController player = target != null ? target.GetComponent<PlayerController>() : null;
+        if (player != null && player.ActiveCamera != null)
+            return player.ActiveCamera;
+
+        Camera main = Camera.main;
+        if (main != null)
+            return main;
+
+        ThirdPersonOrbitCamera orbitCamera = Object.FindFirstObjectByType<ThirdPersonOrbitCamera>();
+        if (orbitCamera != null)
+            return orbitCamera.GetComponent<Camera>();
+
+        CameraController controller = Object.FindFirstObjectByType<CameraController>();
+        if (controller != null)
+            return controller.GetComponent<Camera>();
+
+        return null;
+    }
+
+    private static bool IsLocalCamera(Transform root)
+    {
+#if PUN_2_OR_NEWER || PHOTON_UNITY_NETWORKING
+        Photon.Pun.PhotonView pv = root != null ? root.GetComponentInParent<Photon.Pun.PhotonView>() : null;
+        return pv == null || pv.IsMine;
+#else
+        return true;
+#endif
+    }
+
+    private static bool IsLocalPlayer(Transform root)
+    {
+#if PUN_2_OR_NEWER || PHOTON_UNITY_NETWORKING
+        Photon.Pun.PhotonView pv = root != null ? root.GetComponentInParent<Photon.Pun.PhotonView>() : null;
+        return pv == null || pv.IsMine;
+#else
+        return true;
+#endif
     }
 }

@@ -1,4 +1,6 @@
+using System.Collections;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 #if PHOTON_UNITY_NETWORKING || PUN_2_OR_NEWER
 using Photon.Pun;
@@ -166,6 +168,7 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
 
     // Cached component
     private Camera _cam;
+    private Coroutine _frameZeroBindRoutine;
 
     // ─────────────────────────────────────────────────────────────────────────
     // PROPERTIES  (read by PlayerController for camera-relative movement)
@@ -244,60 +247,83 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
 
     private void Start()
     {
-        // Auto-find the player if no target was assigned in the Inspector.
         if (target == null)
         {
-            PlayerController pc = Object.FindFirstObjectByType<PlayerController>();
-            if (pc != null)
-            {
-                target = pc.transform;
-                Debug.Log($"[CameraTarget] Resolved orbit camera target authoritative transform: {target.name} via PlayerController.");
-            }
-            else
-            {
-                GameObject playerObj = GameObject.FindWithTag("Player");
-                if (playerObj != null)
-                {
-                    target = playerObj.transform;
-                    Debug.Log($"[CameraTarget] Resolved orbit camera target transform: {target.name} via Tag fallback.");
-                }
-            }
+            target = GameplayCameraBootstrap.ResolveAuthoritativePlayerTarget();
         }
         else
         {
             Debug.Log($"[CameraTarget] Orbit camera using pre-assigned target transform: {target.name}.");
         }
 
-        // ── Build collision mask ──────────────────────────────────────────────
         collisionMask = BuildCollisionMask();
 
-        // ── Initialise orbit angles to the current camera orientation ─────────
-        // Starting from the camera's existing rotation prevents a snap on the
-        // first frame, which is jarring especially in multiplayer rejoins.
-        _yaw   = transform.eulerAngles.y;
-        _pitch = Mathf.Clamp(
-            WrapAngle(transform.eulerAngles.x),
-            pitchMin,
-            pitchMax);
-
-        // ── Initialise pivot and distance ─────────────────────────────────────
-        _currentDistance  = defaultDistance;
-        _smoothedPivot    = GetRawPivot();
-        _pivotInitialized = true;
-
-        // Near-clip: 0.08 is the sweet spot for third-person — close enough that
-        // the player body fills the frame but far enough that meshes don't clip.
         _cam.nearClipPlane = 0.08f;
 
-        // ── Cursor lock ───────────────────────────────────────────────────────
+        if (target != null)
+        {
+            BindAuthoritativeTarget(target);
+        }
+        else
+        {
+            _yaw = transform.eulerAngles.y;
+            _pitch = Mathf.Clamp(WrapAngle(transform.eulerAngles.x), pitchMin, pitchMax);
+            _currentDistance = defaultDistance;
+            _pivotInitialized = false;
+        }
+
         if (lockCursor)
             ApplyCursorLock(true);
+    }
+
+    private void OnEnable()
+    {
+        SceneManager.sceneLoaded += HandleSceneLoaded;
+        if (_frameZeroBindRoutine != null)
+            StopCoroutine(_frameZeroBindRoutine);
+        _frameZeroBindRoutine = StartCoroutine(FrameZeroBindRoutine());
+    }
+
+    private void OnDisable()
+    {
+        SceneManager.sceneLoaded -= HandleSceneLoaded;
+        if (_frameZeroBindRoutine != null)
+        {
+            StopCoroutine(_frameZeroBindRoutine);
+            _frameZeroBindRoutine = null;
+        }
     }
 
     private void OnDestroy()
     {
         if (Instance == this)
             Instance = null;
+    }
+
+    private void HandleSceneLoaded(Scene scene, LoadSceneMode mode)
+    {
+        ClearTargetCache();
+        if (!GameplayCameraBootstrap.TryBindActiveGameplayCamera() && isActiveAndEnabled)
+        {
+            if (_frameZeroBindRoutine != null)
+                StopCoroutine(_frameZeroBindRoutine);
+            _frameZeroBindRoutine = StartCoroutine(FrameZeroBindRoutine());
+        }
+    }
+
+    private IEnumerator FrameZeroBindRoutine()
+    {
+        for (int i = 0; i < 8; i++)
+        {
+            if (GameplayCameraBootstrap.TryBindActiveGameplayCamera())
+            {
+                _frameZeroBindRoutine = null;
+                yield break;
+            }
+            yield return null;
+        }
+
+        _frameZeroBindRoutine = null;
     }
 
     private void OnApplicationFocus(bool hasFocus)
@@ -310,6 +336,13 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
     private void FixedUpdate()
     {
         if (target == null)
+        {
+            Transform resolved = GameplayCameraBootstrap.ResolveAuthoritativePlayerTarget();
+            if (resolved != null)
+                BindAuthoritativeTarget(resolved);
+        }
+
+        if (target == null)
             return;
 
         ReadMouseInput();
@@ -320,7 +353,13 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
 
     private void LateUpdate()
     {
-        if (target == null) return;
+        if (target == null)
+        {
+            if (!GameplayCameraBootstrap.TryBindActiveGameplayCamera())
+                return;
+            if (target == null)
+                return;
+        }
 
         UpdateSmoothedPivot();
 
@@ -520,6 +559,79 @@ public class ThirdPersonOrbitCamera : MonoBehaviour
 
     private PlayerController _cachedPlayerController;
     private bool             _playerControllerSearched;
+
+    public void ClearTargetCache()
+    {
+        target = null;
+        _pivotInitialized = false;
+        _physicsPivotValid = false;
+        _pivotVelocity = Vector3.zero;
+        _distanceVelocity = 0f;
+        _cachedPlayerController = null;
+        _playerControllerSearched = false;
+    }
+
+    public void BindAuthoritativeTarget(Transform newTarget)
+    {
+        if (newTarget == null)
+            return;
+
+        target = newTarget;
+        _cachedPlayerController = null;
+        _playerControllerSearched = false;
+        _yaw = target.eulerAngles.y;
+        _pitch = Mathf.Clamp(8f, pitchMin, pitchMax);
+        _currentDistance = defaultDistance;
+        _pivotVelocity = Vector3.zero;
+        _distanceVelocity = 0f;
+        _physicsPivot = GetRawPivot();
+        _physicsPivotValid = true;
+        _smoothedPivot = _physicsPivot;
+        _pivotInitialized = true;
+        collisionMask = BuildCollisionMask();
+
+        if (_cam == null)
+            _cam = GetComponent<Camera>();
+        if (_cam != null)
+        {
+            _cam.enabled = true;
+            _cam.nearClipPlane = 0.08f;
+            if (!_cam.gameObject.CompareTag("MainCamera"))
+                _cam.gameObject.tag = "MainCamera";
+        }
+
+        Vector3 desiredPos = ComputeDesiredPosition();
+        Vector3 finalPos = enableCollision
+            ? ResolveCollisionImmediate(_smoothedPivot, desiredPos)
+            : desiredPos;
+
+        transform.position = finalPos;
+        if ((_smoothedPivot - transform.position).sqrMagnitude > 0.0001f)
+            transform.LookAt(_smoothedPivot);
+
+        CameraController legacy = GetComponent<CameraController>();
+        if (legacy != null)
+        {
+            legacy.target = target;
+            legacy.pitch = _pitch;
+            legacy.externalYaw = _yaw;
+        }
+    }
+
+    private Vector3 ResolveCollisionImmediate(Vector3 pivot, Vector3 desiredPos)
+    {
+        Vector3 castDir = desiredPos - pivot;
+        float desiredDist = castDir.magnitude;
+        if (desiredDist < 0.001f)
+            return desiredPos;
+
+        castDir /= desiredDist;
+        float safeDist = enableCollision
+            ? FindSafeDistance(pivot, castDir, desiredDist)
+            : desiredDist;
+        _currentDistance = Mathf.Max(safeDist, minDistance);
+        return pivot + castDir * _currentDistance;
+    }
 
     private void FeedPlayerControllerYaw()
     {
