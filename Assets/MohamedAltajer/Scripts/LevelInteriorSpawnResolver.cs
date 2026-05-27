@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.AI;
 using UnityEngine.SceneManagement;
 
 public static class LevelInteriorSpawnResolver
@@ -18,6 +19,20 @@ public static class LevelInteriorSpawnResolver
 
     private static bool _loggedSpawnFailure;
     private static Vector3? _cachedSpawn;
+    private static readonly Collider[] _spawnOverlapBuffer = new Collider[64];
+    public static bool debugSpawnVariation = false;
+
+    private struct SpawnCandidate
+    {
+        public Vector3 Position;
+        public string Name;
+
+        public SpawnCandidate(Vector3 position, string name)
+        {
+            Position = position;
+            Name = name;
+        }
+    }
 
     public static void ResetDiagnostics()
     {
@@ -57,22 +72,25 @@ public static class LevelInteriorSpawnResolver
         _cachedSpawn = null;
         EnsureKnownWalkableFloorLayers();
 
-        Transform[] markers = ResolveSpawnReferences();
-        for (int i = 0; i < markers.Length; i++)
+        System.Collections.Generic.List<SpawnCandidate> candidates = BuildSpawnCandidates(ResolveSpawnReferences());
+        ShuffleSpawnCandidates(candidates);
+        for (int i = 0; i < candidates.Count; i++)
         {
-            Transform marker = markers[i];
-            if (marker == null)
-                continue;
+            SpawnCandidate candidate = candidates[i];
 
-            if (TryResolveCandidatePosition(marker.position, player, out spawn, out string error))
+            if (TryResolveCandidatePosition(candidate.Position, player, out spawn, out string error))
             {
                 _cachedSpawn = spawn;
-                Debug.Log($"[SciFiRestart] selected spawn={spawn} marker={marker.name}");
-                Debug.Log($"[SciFiSpawn] spawn via marker {marker.name} pos={spawn}");
+                if (debugSpawnVariation)
+                {
+                    Debug.Log($"[SciFiRestart] selected spawn={spawn} marker={candidate.Name}");
+                    Debug.Log($"[SciFiSpawn] spawn via marker {candidate.Name} pos={spawn}");
+                }
                 return true;
             }
 
-            Debug.LogWarning("[SciFiSpawn] rejected spawn marker: " + error);
+            if (debugSpawnVariation)
+                Debug.LogWarning($"[SciFiSpawn] rejected spawn candidate {candidate.Name}: {error}");
         }
 
         if (TryResolveAutomaticFallback(player, out spawn, out string fallbackReason))
@@ -164,6 +182,11 @@ public static class LevelInteriorSpawnResolver
 
     private static bool TryResolveCandidatePosition(Vector3 position, PlayerController player, out Vector3 spawn, out string error)
     {
+        return TryResolveCandidatePosition(position, player, float.PositiveInfinity, out spawn, out error);
+    }
+
+    private static bool TryResolveCandidatePosition(Vector3 position, PlayerController player, float maxFloorY, out Vector3 spawn, out string error)
+    {
         spawn = default;
         error = null;
 
@@ -173,13 +196,20 @@ public static class LevelInteriorSpawnResolver
             return false;
         }
 
-        if (!TryFindWalkableFloor(position, out RaycastHit hit))
+        if (!TryFindWalkableFloor(position, maxFloorY, out RaycastHit hit))
         {
             error = $"spawn candidate {position} did not project onto walkable or environment floor geometry";
             return false;
         }
 
         Vector3 candidate = hit.point + Vector3.up * SpawnFloorOffset;
+        if (!TryResolveSameFloorNavMeshCandidate(candidate, hit.point.y, player, out Vector3 navCandidate, out string navError))
+        {
+            error = navError;
+            return false;
+        }
+        candidate = navCandidate;
+
         if (!IsInsideArenaBounds(candidate))
         {
             error = $"spawn candidate resolved outside playable interior bounds at {candidate}";
@@ -199,6 +229,8 @@ public static class LevelInteriorSpawnResolver
         }
 
         spawn = candidate;
+        if (debugSpawnVariation)
+            Debug.Log($"[SciFiSpawn] accepted spawn pos={spawn} reason=marker/fallback navmesh+ground+capsule-clear");
         return true;
     }
 
@@ -212,8 +244,14 @@ public static class LevelInteriorSpawnResolver
 
         AddGenericSceneCandidates(candidates);
 
+        // Cap accepted floor Y to the ground-floor band. Without this, fallback
+        // raycasts starting above the arena top happily land on upper catwalks,
+        // roof slabs, or any surface whose runtime collider survived — that's
+        // how the player ended up "floating in ceilings."
+        float groundFloorCeiling = float.PositiveInfinity;
         if (TryGetPlayableBounds(out Bounds playableBounds))
         {
+            groundFloorCeiling = playableBounds.min.y + FloorBandMaxOffset;
             Vector3 c = playableBounds.center;
             candidates.Add(new Vector3(c.x, playableBounds.max.y + 2f, c.z));
             reference = new Vector3(c.x, playableBounds.max.y + 2f, c.z);
@@ -232,7 +270,7 @@ public static class LevelInteriorSpawnResolver
 
         for (int i = 0; i < candidates.Count; i++)
         {
-            if (TryResolveCandidatePosition(candidates[i], player, out spawn, out _))
+            if (TryResolveCandidatePosition(candidates[i], player, groundFloorCeiling, out spawn, out _))
             {
                 reason = "projected candidate #" + i;
                 return true;
@@ -240,7 +278,7 @@ public static class LevelInteriorSpawnResolver
         }
 
         if (TryFindClosestStructuralFloorPoint(reference, out Vector3 structuralPoint)
-            && TryResolveCandidatePosition(structuralPoint, player, out spawn, out _))
+            && TryResolveCandidatePosition(structuralPoint, player, groundFloorCeiling, out spawn, out _))
         {
             reason = "closest structural floor collider";
             return true;
@@ -248,8 +286,7 @@ public static class LevelInteriorSpawnResolver
 
         if (TryFindClosestMeshVertexFloorPoint(reference, out Vector3 vertexPoint))
         {
-            Vector3 candidate = vertexPoint + Vector3.up * SpawnFloorOffset;
-            if (IsInsideArenaBounds(candidate) && IsOnPlayableFloor(candidate) && HasCapsuleClearance(candidate, player))
+            if (TryResolveCandidatePosition(vertexPoint, player, groundFloorCeiling, out Vector3 candidate, out _))
             {
                 spawn = candidate;
                 reason = "closest structural mesh vertex";
@@ -286,6 +323,65 @@ public static class LevelInteriorSpawnResolver
             GameObject go = GameObject.Find(names[i]);
             if (go != null && IsFinite(go.transform.position))
                 candidates.Add(go.transform.position);
+        }
+    }
+
+    private static System.Collections.Generic.List<SpawnCandidate> BuildSpawnCandidates(Transform[] markers)
+    {
+        System.Collections.Generic.List<SpawnCandidate> candidates = new System.Collections.Generic.List<SpawnCandidate>(32);
+
+        if (markers == null)
+            return candidates;
+
+        for (int i = 0; i < markers.Length; i++)
+        {
+            Transform marker = markers[i];
+            if (marker == null || !IsFinite(marker.position))
+                continue;
+
+            candidates.Add(new SpawnCandidate(marker.position, marker.name));
+            AddSpawnVariations(candidates, marker.position, marker.name);
+        }
+
+        return candidates;
+    }
+
+    private static void AddSpawnVariations(System.Collections.Generic.List<SpawnCandidate> candidates, Vector3 origin, string baseName)
+    {
+        float[] radii = { 2.2f, 4.0f, 6.0f };
+        Vector3[] directions =
+        {
+            Vector3.forward,
+            Vector3.back,
+            Vector3.left,
+            Vector3.right,
+            new Vector3(1f, 0f, 1f).normalized,
+            new Vector3(-1f, 0f, 1f).normalized,
+            new Vector3(1f, 0f, -1f).normalized,
+            new Vector3(-1f, 0f, -1f).normalized
+        };
+
+        for (int r = 0; r < radii.Length; r++)
+        {
+            for (int d = 0; d < directions.Length; d++)
+            {
+                Vector3 candidate = origin + directions[d] * radii[r];
+                candidates.Add(new SpawnCandidate(candidate, $"{baseName}_var{r}_{d}"));
+            }
+        }
+    }
+
+    private static void ShuffleSpawnCandidates(System.Collections.Generic.List<SpawnCandidate> candidates)
+    {
+        if (candidates == null || candidates.Count <= 1)
+            return;
+
+        for (int i = candidates.Count - 1; i > 0; i--)
+        {
+            int j = Random.Range(0, i + 1);
+            SpawnCandidate temp = candidates[i];
+            candidates[i] = candidates[j];
+            candidates[j] = temp;
         }
     }
 
@@ -462,6 +558,11 @@ public static class LevelInteriorSpawnResolver
 
     private static bool TryFindWalkableFloor(Vector3 markerPosition, out RaycastHit hit)
     {
+        return TryFindWalkableFloor(markerPosition, float.PositiveInfinity, out hit);
+    }
+
+    private static bool TryFindWalkableFloor(Vector3 markerPosition, float maxFloorY, out RaycastHit hit)
+    {
         Vector3 origin = markerPosition + Vector3.up * MarkerProbeUp;
         int mask = BuildFloorProjectionMask();
         if (mask == 0)
@@ -480,7 +581,7 @@ public static class LevelInteriorSpawnResolver
         System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
         for (int i = 0; i < hits.Length; i++)
         {
-            if (!IsValidWalkableFloorHit(hits[i]))
+            if (!IsValidWalkableFloorHit(hits[i], maxFloorY))
                 continue;
             hit = hits[i];
             return true;
@@ -492,9 +593,15 @@ public static class LevelInteriorSpawnResolver
 
     private static bool IsValidWalkableFloorHit(RaycastHit hit)
     {
-        return hit.collider != null
-            && hit.normal.y >= MinWalkableNormalY
-            && IsWalkableFloorCollider(hit.collider);
+        return IsValidWalkableFloorHit(hit, float.PositiveInfinity);
+    }
+
+    private static bool IsValidWalkableFloorHit(RaycastHit hit, float maxFloorY)
+    {
+        if (hit.collider == null) return false;
+        if (hit.normal.y < MinWalkableNormalY) return false;
+        if (hit.point.y > maxFloorY) return false;
+        return IsWalkableFloorCollider(hit.collider);
     }
 
     private static bool IsWalkableFloorCollider(Collider collider)
@@ -574,7 +681,106 @@ public static class LevelInteriorSpawnResolver
         float height = controller != null ? Mathf.Max(radius * 2.2f, controller.height) : 2f;
         Vector3 bottom = feet + Vector3.up * (radius + 0.08f);
         Vector3 top = feet + Vector3.up * Mathf.Max(radius + 0.12f, height - radius);
-        return !Physics.CheckCapsule(bottom, top, radius * 0.92f, BuildSpawnBlockerMask(), QueryTriggerInteraction.Ignore);
+        int hitCount = Physics.OverlapCapsuleNonAlloc(
+            bottom,
+            top,
+            radius * 0.92f,
+            _spawnOverlapBuffer,
+            BuildSpawnBlockerMask(),
+            QueryTriggerInteraction.Ignore);
+
+        for (int i = 0; i < hitCount; i++)
+        {
+            Collider collider = _spawnOverlapBuffer[i];
+            if (collider == null || !collider.enabled || collider.isTrigger)
+                continue;
+            if (IsWalkableFloorCollider(collider))
+                continue;
+
+            if (debugSpawnVariation)
+                Debug.LogWarning($"[SciFiSpawn] capsule clearance rejected blocker={collider.name} bounds={collider.bounds} feet={feet}");
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryResolveSameFloorNavMeshCandidate(
+        Vector3 candidate,
+        float floorY,
+        PlayerController player,
+        out Vector3 resolved,
+        out string error)
+    {
+        resolved = candidate;
+        error = null;
+
+        if (!TryFindSameFloorNavMeshPoint(candidate, floorY, out Vector3 navPoint))
+        {
+            error = $"spawn candidate {candidate} has no same-floor NavMesh point near marker";
+            return false;
+        }
+
+        if (!TryFindWalkableFloor(navPoint, out RaycastHit navFloor))
+        {
+            error = $"spawn candidate {candidate} NavMesh point {navPoint} has no valid ground raycast";
+            return false;
+        }
+
+        if (Mathf.Abs(navFloor.point.y - floorY) > 1.1f)
+        {
+            error = $"spawn candidate {candidate} NavMesh floor changed levels markerY={floorY:F2} navFloorY={navFloor.point.y:F2}";
+            return false;
+        }
+
+        Vector3 feet = navFloor.point + Vector3.up * SpawnFloorOffset;
+        if (!HasCapsuleClearance(feet, player))
+        {
+            error = $"spawn candidate {candidate} same-floor NavMesh point has blocked capsule at {feet}";
+            return false;
+        }
+
+        resolved = feet;
+        return true;
+    }
+
+    private static bool TryFindSameFloorNavMeshPoint(Vector3 seed, float floorY, out Vector3 navPoint)
+    {
+        navPoint = default;
+
+        float[] radii = { 1.5f, 3f, 5f, 7f };
+        for (int r = 0; r < radii.Length; r++)
+        {
+            if (NavMesh.SamplePosition(seed, out NavMeshHit hit, radii[r], NavMesh.AllAreas)
+                && Mathf.Abs(hit.position.y - floorY) <= 1.25f)
+            {
+                navPoint = hit.position;
+                return true;
+            }
+        }
+
+        Vector3[] offsets =
+        {
+            Vector3.forward, Vector3.back, Vector3.left, Vector3.right,
+            new Vector3(1f, 0f, 1f), new Vector3(-1f, 0f, 1f),
+            new Vector3(1f, 0f, -1f), new Vector3(-1f, 0f, -1f)
+        };
+
+        for (int radius = 2; radius <= 8; radius += 2)
+        {
+            for (int i = 0; i < offsets.Length; i++)
+            {
+                Vector3 probe = seed + offsets[i].normalized * radius;
+                if (!NavMesh.SamplePosition(probe, out NavMeshHit hit, 1.75f, NavMesh.AllAreas))
+                    continue;
+                if (Mathf.Abs(hit.position.y - floorY) > 1.25f)
+                    continue;
+                navPoint = hit.position;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool LooksLikeWalkableFloor(Collider collider)

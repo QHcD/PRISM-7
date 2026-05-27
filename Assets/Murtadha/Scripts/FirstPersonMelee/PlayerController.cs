@@ -94,6 +94,18 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     [Tooltip("Optional humanoid avatar override for the spawned third-person body.")]
     public Avatar playerAvatar;
 
+    [Tooltip("Logs live locomotion Animator values. Keep disabled for normal gameplay/builds.")]
+    public bool debugAnimator = false;
+
+    [SerializeField, Tooltip("How often debugAnimator prints while enabled.")]
+    private float animatorDebugInterval = 0.35f;
+
+    [SerializeField, Tooltip("Playback multiplier while walking. Gameplay movement speed is unchanged.")]
+    private float walkAnimationPlayback = 1.08f;
+
+    [SerializeField, Tooltip("Playback multiplier at full sprint. Gameplay movement speed is unchanged.")]
+    private float sprintAnimationPlayback = 1.35f;
+
     [Header("Movement Tuning")]
     [Tooltip("How fast the character reaches full speed (units/s²). High value removes the 'wading through mud' feel.")]
     public float acceleration = 26f;
@@ -350,6 +362,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     private int _postSpawnGroundSnapFrames; // extra snaps after load/restart
     private Animator _bodyAnimatorCached;   // cached animator from thirdPersonBody
     private GameObject _lastThirdPersonBodyRef; // tracks when to invalidate the cache
+    private float _nextAnimatorDebugLogTime;
     private float nextMovementInputDebugLogTime;
 
     // Camera kick (recoil feedback)
@@ -433,8 +446,13 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     // Called every LateUpdate by ThirdPersonOrbitCamera to keep the player's
     // cameraYaw / cameraPitch in sync so movement and first-person camera kick
     // both remain camera-relative without any other code changes.
-    public void SetOrbitYaw(float yaw)    { cameraYaw   = yaw; }
-    public void SetOrbitPitch(float pitch){ cameraPitch = pitch; }
+    public void SetOrbitYaw(float yaw)    { if (IsFinite(yaw)) cameraYaw = yaw; }
+    public void SetOrbitPitch(float pitch){ if (IsFinite(pitch)) cameraPitch = Mathf.Clamp(pitch, ThirdPersonMinPitch, ThirdPersonMaxPitch); }
+
+    private static bool IsFinite(float value)
+    {
+        return !float.IsNaN(value) && !float.IsInfinity(value);
+    }
 
     private int GetGroundCheckMask()
     {
@@ -2122,13 +2140,20 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         }
 
         Vector3 verticalDelta = new Vector3(0f, verticalVelocity.y * dt, 0f);
-        if (IsAscendingJump())
+        // Guard against CharacterController.Move being called while disabled
+        // (happens briefly during ApplyExternalSpawn / multiplayer respawn
+        // teleports). Without this we get a console-spam wall of
+        // "CharacterController.Move called on inactive controller".
+        if (controller != null && controller.enabled)
         {
-            controller.Move(verticalDelta);
-            controller.Move(horizontalDelta);
+            if (IsAscendingJump())
+            {
+                controller.Move(verticalDelta);
+                controller.Move(horizontalDelta);
+            }
+            else
+                controller.Move(horizontalDelta + verticalDelta);
         }
-        else
-            controller.Move(horizontalDelta + verticalDelta);
 
         UpdateTacticalManeuverState();
         UpdateStanceCollider();
@@ -2178,6 +2203,12 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         if (input.sqrMagnitude < 0.0001f)
             return Vector3.zero;
 
+        // PRISM-71 behaviour: face the actual movement direction. The old build
+        // turned the body to match the WASD vector — pressing S spun the player
+        // 180° and ran forward toward the camera. The backpedal variant looked
+        // wrong on the locomotion blend and is what the user means by "doesn't
+        // walk smoothly on both feet" — the strafe/backpedal sub-states don't
+        // line up with the Crosby rig's stride.
         return GetCameraRelativeMoveDirection(input);
     }
 
@@ -2294,6 +2325,56 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     //  CAMERA / LOOK
     // ════════════════════════════════════════════════════════════════════════
 
+    public void ForceImmediateSpawnPresentation(bool resetCamera)
+    {
+        EnsureCriticalComponents();
+        ApplyPerspectivePreference();
+        EnsureThirdPersonBody();
+        EnsureThirdPersonCamera();
+
+        if (controller != null && !controller.enabled)
+            controller.enabled = true;
+
+        SnapCapsuleToWalkableGround();
+        verticalVelocity = Vector3.zero;
+        verticalVelocity.y = -GetGroundedStickVelocity();
+        _postSpawnGroundSnapFrames = 4;
+
+        if (thirdPersonBody != null)
+        {
+            thirdPersonBody.SetActive(true);
+            SetThirdPersonRenderersVisible(true);
+            SetLayerRecursive(thirdPersonBody, gameObject.layer);
+            LockAvatarRigidbodies(thirdPersonBody);
+            UpdateBodyBasePosition();
+            StabilizeStandingVisualPose();
+            thirdPersonBody.transform.localRotation = thirdPersonBodyBaseLocalRotation;
+        }
+
+        animator = thirdPersonBody != null ? thirdPersonBody.GetComponentInChildren<Animator>(true) : animator;
+        ConfigureAnimatorBinding(animator, forceControllerAssignment: false);
+        CacheAnimatorParameters();
+        AssignMaterial();
+        ApplyPlayerBodyBlackTint();
+        RefreshCachedGameplayCamera();
+
+        if (resetCamera && runtimeThirdPersonCamera != null)
+        {
+            ThirdPersonOrbitCamera orbit = runtimeThirdPersonCamera.GetComponent<ThirdPersonOrbitCamera>();
+            if (orbit != null)
+                orbit.BindAuthoritativeTarget(transform);
+
+            CameraController camCtrl = runtimeThirdPersonCamera.GetComponent<CameraController>();
+            if (camCtrl != null)
+            {
+                camCtrl.target = transform;
+                camCtrl.SnapToTarget();
+            }
+        }
+
+        Physics.SyncTransforms();
+    }
+
     private void ApplyLook()
     {
         Camera cam = ActiveCamera;
@@ -2333,6 +2414,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         // Soft camera follow: drift cameraYaw toward the player's facing direction while moving.
         if (isThirdPersonActive &&
             cameraMovementFollowStrength > 0.001f &&
+            moveInputSmoothed.y > 0.1f &&
             moveInputSmoothed.sqrMagnitude > 0.04f)
         {
             float facingYaw  = transform.eulerAngles.y;
@@ -2431,11 +2513,11 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
                 "Combat failsafe will clear the attack lock automatically.",
                 this);
         }
-        else
-        {
-            AnimFireTrigger(activeAnimator, HashAttack);
-        }
 
+        // PRISM-71 lets UpdateAnimatorParameters() fire the Attack trigger on
+        // the isAttacking-rising-edge transition. Firing it twice (here AND in
+        // UpdateAnimatorParameters) double-consumed the trigger on some
+        // controllers and produced the half-cancelled swing the user noticed.
         FireAttack();
         SendNetworkAttackVisual();
     }
@@ -3662,36 +3744,33 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         ConfigureAnimatorBinding(anim, forceControllerAssignment: false);
         if (anim.runtimeAnimatorController == null) return;
 
+        // PRISM-71 behaviour: drive Speed from input magnitude, not from
+        // measured velocity. Input-driven Speed snaps to 0 the instant keys
+        // are released — measured velocity decays slowly and kept the run
+        // animation playing while the character was sliding to a stop, which
+        // is what the user means by "doesn't walk smoothly on both feet".
+        float normalizedSpeed = moveInputSmoothed.sqrMagnitude > 0.01f
+            ? Mathf.Clamp01(moveInputSmoothed.magnitude)
+            : 0f;
+
+        // Same Speed parameter, two hashes for animator controllers that use
+        // either naming convention. Keep the 0.1 s damp so the blend tree
+        // glides between Idle and Walk states.
+        bool droveSpeedParameter = AnimSetFloat(anim, HashSpeed, normalizedSpeed, 0.1f);
+        AnimSetFloat(anim, HashMoveSpeed, normalizedSpeed, 0.1f);
+
+        // Local-space velocity for 2D blend trees that still want axis floats.
+        // Harmless if the animator only reads Speed — these params simply sit
+        // at zero on rigs that don't reference them.
         float maxReferenceSpeed = Mathf.Max(0.01f, moveSpeed * sprintMultiplier);
-        float planarSpeed = actualHorizontalVelocity.magnitude;
-
-        bool effectivelyIdle = moveInputRaw.sqrMagnitude < 0.0001f
-                            && moveInputSmoothed.sqrMagnitude < 0.0004f;
-
-        float normalizedSpeed = effectivelyIdle
-            ? 0f
-            : Mathf.Clamp01(planarSpeed / maxReferenceSpeed);
-
-        // Local-space horizontal velocity drives the 2D Blend Tree.
-        // We use actualHorizontalVelocity (measured displacement) so the legs
-        // match real motion, not intent. During a turn-in the body has not yet
-        // rotated to face movement direction, so the local velocity has lateral
-        // components that correctly drive the strafe / backward blends.
         float moveX = 0f;
         float moveY = 0f;
-        if (!effectivelyIdle)
+        if (normalizedSpeed > 0f)
         {
             Vector3 localVel = transform.InverseTransformDirection(actualHorizontalVelocity);
             moveX = Mathf.Clamp(localVel.x / maxReferenceSpeed, -1f, 1f);
             moveY = Mathf.Clamp(localVel.z / maxReferenceSpeed, -1f, 1f);
         }
-
-        // Damping is in seconds. Speed is the master gate (idle ↔ moving) so
-        // it stays snappy at 0.08s. MoveX/MoveY drive the 2D blend tree axes
-        // and benefit from a touch more smoothing (0.12s) so direction flips
-        // during turn-in don't visually pop between strafe and forward poses.
-        bool droveSpeedParameter = AnimSetFloat(anim, HashSpeed, normalizedSpeed, 0.08f);
-        AnimSetFloat(anim, HashMoveSpeed, normalizedSpeed, 0.08f);
         AnimSetFloat(anim, HashMoveX, moveX, 0.12f);
         AnimSetFloat(anim, HashMoveY, moveY, 0.12f);
         AnimSetFloat(anim, HashVelocityX, moveX, 0.12f);
@@ -3705,6 +3784,119 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         AnimSetBool(anim, HashGrounded, isGrounded || IsGroundedForJump());
         AnimSetBool(anim, HashSprinting, isSprinting);
         AnimSetBool(anim, HashMoving, moving);
+
+        // PRISM-71 attack trigger: fire ONCE on the frame isAttacking flips
+        // from false → true. Also fire the per-weapon category trigger
+        // (Attack_Light, Attack_Sword, …) when the controller defines one.
+        // Doing it here (not in Attack()) avoids double-consumption on
+        // controllers that have both the generic and per-category triggers.
+        if (isAttacking && !_wasAttackingLastFrame)
+        {
+            AnimFireTrigger(anim, HashAttack);
+
+            int weaponLevel = GetEquippedWeaponLevel();
+            WeaponAnimationCategory category = WeaponAnimationCategories.ForLevel(weaponLevel);
+            string categoryTrigger = WeaponAnimationCategories.GetAttackTrigger(category);
+            if (!string.IsNullOrEmpty(categoryTrigger)
+                && categoryTrigger != WeaponAnimationCategories.GenericAttackTrigger)
+            {
+                AnimFireTriggerByName(anim, categoryTrigger);
+            }
+        }
+        _wasAttackingLastFrame = isAttacking;
+
+        // PRISM-71 trusts the animator clip's authored playback speed. The
+        // old UpdateLocomotionPlayback scaled anim.speed by 1.08 → 1.35 based
+        // on velocity, which compressed the stride and produced the limping
+        // "doesn't walk on both feet" look. Leaving anim.speed at 1 lets the
+        // Crosby walk/run clips play at their authored cadence.
+        if (anim.speed != 1f)
+            anim.speed = 1f;
+
+        DebugAnimatorState(anim, actualHorizontalVelocity.magnitude, normalizedSpeed);
+    }
+
+    private bool _wasAttackingLastFrame;
+
+    private static bool AnimFireTriggerByName(Animator anim, string name)
+    {
+        if (anim == null || string.IsNullOrEmpty(name)) return false;
+        foreach (AnimatorControllerParameter p in anim.parameters)
+        {
+            if (p.name != name || p.type != AnimatorControllerParameterType.Trigger) continue;
+            anim.SetTrigger(name);
+            return true;
+        }
+        return false;
+    }
+
+    private void UpdateLocomotionPlayback(Animator anim, float normalizedSpeed, float planarSpeed, bool moving)
+    {
+        if (anim == null) return;
+
+        AnimatorStateInfo currentState = anim.GetCurrentAnimatorStateInfo(0);
+        bool currentLocomotionState = IsLocomotionState(currentState);
+        bool nextLocomotionState = !anim.IsInTransition(0) || IsLocomotionState(anim.GetNextAnimatorStateInfo(0));
+        bool locomotionState = currentLocomotionState && nextLocomotionState;
+
+        if (isAttacking || !locomotionState)
+        {
+            anim.speed = 1f;
+            return;
+        }
+
+        if (!moving || planarSpeed <= 0.05f)
+        {
+            anim.speed = 1f;
+            return;
+        }
+
+        float walk01 = Mathf.Clamp01(planarSpeed / Mathf.Max(0.01f, moveSpeed));
+        float sprint01 = Mathf.Clamp01(normalizedSpeed);
+        float walkScale = Mathf.Lerp(1f, Mathf.Max(1f, walkAnimationPlayback), walk01);
+        float sprintScale = Mathf.Lerp(walkScale, Mathf.Max(walkScale, sprintAnimationPlayback), sprint01);
+        anim.speed = Mathf.Clamp(sprintScale, 0.85f, 1.6f);
+    }
+
+    private void DebugAnimatorState(Animator anim, float planarSpeed, float normalizedSpeed)
+    {
+        if (!debugAnimator || anim == null || Time.unscaledTime < _nextAnimatorDebugLogTime)
+            return;
+
+        _nextAnimatorDebugLogTime = Time.unscaledTime + Mathf.Max(0.05f, animatorDebugInterval);
+        AnimatorStateInfo state = anim.GetCurrentAnimatorStateInfo(0);
+        Debug.Log(
+            $"[PlayerController.Animator] velocity={planarSpeed:F2} speedParam={normalizedSpeed:F2} " +
+            $"animatorSpeed={anim.speed:F2} state={DescribeAnimatorState(anim)} normalizedTime={state.normalizedTime:F2}",
+            anim);
+    }
+
+    private static bool AnimatorIsInState(Animator anim, string stateName)
+    {
+        return anim.IsInTransition(0)
+            ? anim.GetNextAnimatorStateInfo(0).IsName(stateName) || anim.GetCurrentAnimatorStateInfo(0).IsName(stateName)
+            : anim.GetCurrentAnimatorStateInfo(0).IsName(stateName);
+    }
+
+    private static bool IsLocomotionState(AnimatorStateInfo state)
+    {
+        return state.IsName("Idle") || state.IsName("Locomotion") || state.IsName("Run");
+    }
+
+    private static string DescribeAnimatorState(Animator anim)
+    {
+        string[] knownStates =
+        {
+            "Idle", "Locomotion", "Run", "Attack", "Hit", "JumpOver", "Slide", "Prone Idle", "Death"
+        };
+
+        for (int i = 0; i < knownStates.Length; i++)
+        {
+            if (AnimatorIsInState(anim, knownStates[i]))
+                return knownStates[i];
+        }
+
+        return anim.IsInTransition(0) ? "Transition" : "Unknown";
     }
 
     // ── Direct, timing-safe param helpers ────────────────────────────────────

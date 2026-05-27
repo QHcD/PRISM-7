@@ -1067,55 +1067,19 @@ public class HUDManager : MonoBehaviour
             fullMapOverlay = new GameObject("FullMapOverlay");
             fullMapOverlay.transform.SetParent(canvasTransform, false);
             Image backdrop = fullMapOverlay.AddComponent<Image>();
-            // Light dim of the world behind the map — was 0.68 (too opaque and
-            // contributed to "huge dark panel" feeling). 0.35 keeps focus on
-            // the map while still de-emphasising gameplay behind it.
-            backdrop.color = new Color(0.02f, 0.04f, 0.08f, 0.35f);
+            backdrop.color = new Color(0.02f, 0.04f, 0.08f, 0.68f);
             Stretch(fullMapOverlay.GetComponent<RectTransform>());
 
-            // Frame is just a thin border tint now — the RawImage on top fully
-            // covers the centre area, so we don't need the dark slab that used
-            // to dominate the screen.
             GameObject frame = CreateImage(fullMapOverlay.transform, "FullMapFrame",
-                new Color(0.08f, 0.12f, 0.18f, 0.55f),
+                new Color(0.08f, 0.12f, 0.18f, 0.96f),
                 new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(1040f, 760f));
             fullMapFrameRect = frame.GetComponent<RectTransform>();
             frame.AddComponent<Outline>().effectColor = new Color(0.32f, 0.78f, 1f, 0.24f);
 
-            // Procedural arena background — behind the RenderTexture RawImage.
-            // Acts as a readable fallback when the map camera is unable to
-            // render geometry (camera off-mesh, layer-mask race, etc.) so the
-            // map never reads as a dark slab. Light slate floor + cyan border
-            // approximating the arena footprint.
-            GameObject floorObject = new GameObject("FullMapFallbackFloor");
-            floorObject.transform.SetParent(frame.transform, false);
-            Image floorImg = floorObject.AddComponent<Image>();
-            floorImg.color = new Color(0.55f, 0.62f, 0.72f, 1f);
-            floorImg.raycastTarget = false;
-            RectTransform floorRect = floorObject.GetComponent<RectTransform>();
-            floorRect.anchorMin = new Vector2(0.5f, 0.5f);
-            floorRect.anchorMax = new Vector2(0.5f, 0.5f);
-            floorRect.anchoredPosition = new Vector2(0f, 18f);
-            floorRect.sizeDelta = new Vector2(920f, 620f);
-
-            GameObject borderObject = new GameObject("FullMapFallbackBorder");
-            borderObject.transform.SetParent(floorObject.transform, false);
-            Image borderImg = borderObject.AddComponent<Image>();
-            borderImg.color = new Color(0f, 0f, 0f, 0f);
-            borderImg.raycastTarget = false;
-            Outline borderOutline = borderObject.AddComponent<Outline>();
-            borderOutline.effectColor = new Color(0.28f, 0.62f, 0.92f, 0.95f);
-            borderOutline.effectDistance = new Vector2(4f, -4f);
-            RectTransform borderRect = borderObject.GetComponent<RectTransform>();
-            borderRect.anchorMin = Vector2.zero;
-            borderRect.anchorMax = Vector2.one;
-            borderRect.offsetMin = Vector2.zero;
-            borderRect.offsetMax = Vector2.zero;
-
             GameObject mapImageObject = new GameObject("FullMapImage");
             mapImageObject.transform.SetParent(frame.transform, false);
             fullMapImage = mapImageObject.AddComponent<RawImage>();
-            fullMapImage.color = new Color(1f, 1f, 1f, 0.85f); // tint so the floor shows through
+            fullMapImage.color = Color.white;
             fullMapImage.raycastTarget = false;
             RectTransform mapRect = mapImageObject.GetComponent<RectTransform>();
             mapRect.anchorMin = new Vector2(0.5f, 0.5f);
@@ -1142,13 +1106,22 @@ public class HUDManager : MonoBehaviour
             fullMapHintText = fullMapOverlay.transform.Find("FullMapFrame/FullMapHint")?.GetComponent<TextMeshProUGUI>();
             fullMapPlayerArrow = fullMapOverlay.transform.Find("FullMapFrame/FullMapPlayerArrow")?.GetComponent<RectTransform>();
 
-            // Re-skin a scene-authored overlay so the dark-slab look from older
-            // scene assets is harmonised with the lighter runtime build.
+            // Re-skin to the clean look that matches the in-game render-texture
+            // map. Old runtime builds added a slate "fallback floor" sprite that
+            // covered the render texture and dulled the actual map — strip it
+            // here so the RawImage shows through cleanly.
             Image cachedBackdrop = fullMapOverlay.GetComponent<Image>();
-            if (cachedBackdrop != null) cachedBackdrop.color = new Color(0.02f, 0.04f, 0.08f, 0.35f);
+            if (cachedBackdrop != null) cachedBackdrop.color = new Color(0.02f, 0.04f, 0.08f, 0.68f);
             Image cachedFrame = fullMapFrameRect != null ? fullMapFrameRect.GetComponent<Image>() : null;
-            if (cachedFrame != null) cachedFrame.color = new Color(0.08f, 0.12f, 0.18f, 0.55f);
+            if (cachedFrame != null) cachedFrame.color = new Color(0.08f, 0.12f, 0.18f, 0.96f);
             if (fullMapImage != null) fullMapImage.color = Color.white;
+
+            if (fullMapFrameRect != null)
+            {
+                Transform stale = fullMapFrameRect.transform.Find("FullMapFallbackFloor");
+                if (stale != null)
+                    Destroy(stale.gameObject);
+            }
         }
 
         Transform frameTransform = fullMapFrameRect != null ? fullMapFrameRect.transform : null;

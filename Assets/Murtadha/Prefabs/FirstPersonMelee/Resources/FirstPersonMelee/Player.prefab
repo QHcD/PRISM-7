@@ -1519,6 +1519,10 @@ MonoBehaviour:
   debugMovementInput: 0
   playerAnimatorController: {fileID: 9100000, guid: 0e3ef47370b809c4989105a0b413222a, type: 2}
   playerAvatar: {fileID: 9000000, guid: 88dc56ed1335a40a28cdeaa63978e7bf, type: 3}
+  debugAnimator: 0
+  animatorDebugInterval: 0.35
+  walkAnimationPlayback: 1.08
+  sprintAnimationPlayback: 1.35
   acceleration: 26
   deceleration: 32
   turnSpeed: 720

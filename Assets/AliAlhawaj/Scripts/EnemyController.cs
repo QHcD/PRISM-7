@@ -512,8 +512,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         // Audio
         _audio = GetComponent<AudioSource>();
         if (_audio == null) _audio = gameObject.AddComponent<AudioSource>();
-        _audio.spatialBlend = 1f;
-        _audio.playOnAwake  = false;
+        CombatSfx3D.ConfigureCombatSource(_audio);
 
         // ── NavMeshAgent ──────────────────────────────────────────────────────
         // Agent owns position; yaw is smoothed in LateUpdate toward velocity / aim.
@@ -1734,7 +1733,71 @@ public class EnemyController : MonoBehaviour, IDamageable
             return;
         }
 
+        EnforceNavMeshContainment();
+
         _frozenLastPos = transform.position;
+    }
+
+    private Vector3 _lastValidWallSafePos;
+    private bool _lastValidWallSafePosInitialized;
+    private const float WallClipMaxDeviation = 0.6f;
+    private const float WallClipSampleRadius = 1.4f;
+
+    private void EnforceNavMeshContainment()
+    {
+        if (_agent == null || !_agent.enabled || !_agent.isOnNavMesh) return;
+        if (_isTraversingOffMeshLink) return;
+
+        Vector3 currentPos = transform.position;
+
+        if (!_lastValidWallSafePosInitialized)
+        {
+            _lastValidWallSafePos = currentPos;
+            _lastValidWallSafePosInitialized = true;
+            return;
+        }
+
+        Vector3 delta = currentPos - _lastValidWallSafePos;
+        delta.y = 0f;
+        float moveDist = delta.magnitude;
+
+        if (moveDist > 0.05f)
+        {
+            Vector3 origin = _lastValidWallSafePos + Vector3.up * 0.6f;
+            Vector3 dir = delta / moveDist;
+            int wallMask = EnemySpawnGeometry.StaticGeometryMask;
+            if (Physics.Raycast(origin, dir, out RaycastHit wallHit, moveDist + 0.1f, wallMask, QueryTriggerInteraction.Ignore))
+            {
+                if (wallHit.collider != null && wallHit.normal.y < 0.5f
+                    && !wallHit.collider.transform.IsChildOf(transform)
+                    && wallHit.collider.GetComponentInParent<EnemyController>() == null
+                    && wallHit.collider.GetComponentInParent<PlayerController>() == null)
+                {
+                    if (UnityEngine.AI.NavMesh.SamplePosition(_lastValidWallSafePos, out UnityEngine.AI.NavMeshHit navHit, WallClipSampleRadius, UnityEngine.AI.NavMesh.AllAreas))
+                    {
+                        _agent.Warp(navHit.position);
+                        _agent.ResetPath();
+                        _lastValidWallSafePos = navHit.position;
+                        return;
+                    }
+                }
+            }
+        }
+
+        if (!UnityEngine.AI.NavMesh.SamplePosition(currentPos, out UnityEngine.AI.NavMeshHit nearest, WallClipSampleRadius, UnityEngine.AI.NavMesh.AllAreas))
+            return;
+
+        Vector3 horizontalDelta = nearest.position - currentPos;
+        horizontalDelta.y = 0f;
+        if (horizontalDelta.magnitude > WallClipMaxDeviation)
+        {
+            _agent.Warp(nearest.position);
+            _agent.ResetPath();
+            _lastValidWallSafePos = nearest.position;
+            return;
+        }
+
+        _lastValidWallSafePos = currentPos;
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -3064,7 +3127,7 @@ public class EnemyController : MonoBehaviour, IDamageable
             samples[i]     = Mathf.Sin(2f * Mathf.PI * frequency * t) * envelope * 0.3f;
         }
         clip.SetData(samples, 0);
-        _audio.PlayOneShot(clip, AudioSettingsRuntime.ScaledSfx(0.5f));
+        CombatSfx3D.PlayCombatSfx3D(clip, transform.position, 0.5f);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -3943,6 +4006,51 @@ public class EnemyController : MonoBehaviour, IDamageable
         _activeWeaponSocket   = null;
         _activeWeaponHandBone = null;
 
+        // PRISM-71 fast path. When the prefab has a WeaponGripSystem reference,
+        // delegate the bone resolution + parenting to it (it knows the
+        // per-weapon grip authored by the rigger). Level 12 saw still goes
+        // through the manual path below because WeaponGripSystem picks
+        // weapon_bone_R for it, which has a baked orientation that produces
+        // an inconsistent grip across enemies.
+        if (weaponGripSystem != null && level != 12)
+        {
+            equippedWeaponObject = weaponGripSystem.AttachWeapon(
+                characterRoot: gameObject,
+                weaponPrefab: weaponPrefab,
+                isPlayer: false,
+                level: level,
+                damage: Mathf.RoundToInt(attackDamage));
+
+            if (equippedWeaponObject != null)
+            {
+                WeaponLoadout catalogLoadout = WeaponLoadoutCatalog.Get(level);
+                equippedWeaponObject.transform.localPosition    = catalogLoadout.EnemyLocalPosition;
+                equippedWeaponObject.transform.localEulerAngles = catalogLoadout.EnemyLocalEuler;
+                if (level == 2) ApplyKatanaHumanoidGrip(equippedWeaponObject, null);
+
+                // WeaponGripSystem parents directly to the hand bone — the
+                // weapon's immediate parent IS the hand bone, so expose it
+                // so the LateUpdate carry-pose blocks can run for this path.
+                _activeWeaponHandBone = equippedWeaponObject.transform.parent;
+
+                WeaponHitbox wh = equippedWeaponObject.GetComponent<WeaponHitbox>();
+                if (wh == null) wh = equippedWeaponObject.AddComponent<WeaponHitbox>();
+                wh.damage = Mathf.Max(1, Mathf.RoundToInt(attackDamage));
+                wh.meleeAttackRange = GetStrictMeleeStrikeRange();
+                wh.maxAttackRange = GetStrictMeleeStrikeRange() + 0.35f;
+                if (level == 12)
+                    wh.overlapRadius = 0.45f;
+                _equippedWeaponHitbox = wh;
+                _equippedWeaponPrefab = weaponPrefab;
+                _equippedWeaponLevel = level;
+                ForceWeaponRenderable(equippedWeaponObject);
+                EnsureEnemyWeaponVisibleWorldSize(equippedWeaponObject, Mathf.Max(0.01f, targetSize));
+                LogWeaponRestoreState("enemy", equippedWeaponObject, weaponPrefab);
+                _weaponAttachInProgress = false;
+                return;
+            }
+        }
+
         // ── Resolve level and pull ALL grip data from the catalog. ───────────
         // This makes AttachWeaponToHand the single source of truth for enemy
         // weapon socketing — LevelBuilder no longer needs to pre-fill inspector
@@ -4159,6 +4267,36 @@ public class EnemyController : MonoBehaviour, IDamageable
             if (renderer == null) continue;
             renderer.enabled = true;
             renderer.forceRenderingOff = false;
+            if (renderer.shadowCastingMode == UnityEngine.Rendering.ShadowCastingMode.ShadowsOnly)
+                renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
+            renderer.allowOcclusionWhenDynamic = false;
+        }
+
+        int visibleLayer = LayerMask.NameToLayer("Hittable");
+        if (visibleLayer < 0) visibleLayer = LayerMask.NameToLayer("Enemy");
+        if (visibleLayer < 0) visibleLayer = 0;
+        SetWeaponLayerRecursive(weapon, visibleLayer);
+
+        Vector3 lossy = weapon.transform.lossyScale;
+        float maxLossy = Mathf.Max(Mathf.Abs(lossy.x), Mathf.Max(Mathf.Abs(lossy.y), Mathf.Abs(lossy.z)));
+        if (maxLossy < 0.01f)
+        {
+            Vector3 ls = weapon.transform.localScale;
+            float maxLocal = Mathf.Max(Mathf.Abs(ls.x), Mathf.Max(Mathf.Abs(ls.y), Mathf.Abs(ls.z)));
+            float boost = Mathf.Max(1f, 0.02f / Mathf.Max(maxLossy, 0.0001f));
+            weapon.transform.localScale = Vector3.one * Mathf.Max(maxLocal, 1f) * boost;
+        }
+    }
+
+    private static void SetWeaponLayerRecursive(GameObject root, int layer)
+    {
+        if (root == null || layer < 0) return;
+        root.layer = layer;
+        Transform[] all = root.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < all.Length; i++)
+        {
+            Transform t = all[i];
+            if (t != null) t.gameObject.layer = layer;
         }
     }
 

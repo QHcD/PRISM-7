@@ -12,6 +12,8 @@ public class CombatVoiceSfx : MonoBehaviour
     [Header("Audio Settings")]
     public AudioSource source;
     public float minInterval = 0.18f;
+    public float minDistance = CombatSfx3D.DefaultMinDistance;
+    public float maxDistance = CombatSfx3D.DefaultMaxDistance;
 
     private float _lastVoiceTime = -100f;
     private bool _hasDied;
@@ -63,13 +65,7 @@ public class CombatVoiceSfx : MonoBehaviour
         if (source == null)
             source = gameObject.AddComponent<AudioSource>();
 
-        source.spatialBlend = 0.65f;
-        source.playOnAwake = false;
-        source.loop = false;
-        source.minDistance = 1.5f;
-        source.maxDistance = 35f;
-        source.rolloffMode = AudioRolloffMode.Linear;
-        source.dopplerLevel = 0f;
+        CombatSfx3D.ConfigureCombatSource(source, minDistance, maxDistance);
     }
 
     public void EnsureClipsLoaded()
@@ -105,8 +101,7 @@ public class CombatVoiceSfx : MonoBehaviour
 
         _lastVoiceTime = Time.time;
         float pitch = Random.Range(0.95f, 1.05f);
-        float vol = AudioSettingsRuntime.ScaledSfx(0.85f);
-        PlayVoiceOneShot(clip, pitch, vol);
+        PlayVoiceOneShot(clip, pitch, 0.85f);
         if (VerboseCombatVoiceLogs)
             Debug.Log($"[CombatVoiceSfx] Hurt sound played on {gameObject.name}");
     }
@@ -127,33 +122,14 @@ public class CombatVoiceSfx : MonoBehaviour
         }
 
         float pitch = Random.Range(0.95f, 1.05f);
-        float vol = AudioSettingsRuntime.ScaledSfx(1f);
-        Vector3 pos = transform.position;
-
-        if (source != null && gameObject.activeInHierarchy && isActiveAndEnabled)
-        {
-            EnsureAudioSource();
-            PlayVoiceOneShot(clip, pitch, vol);
-            if (VerboseCombatVoiceLogs)
-                Debug.Log($"[CombatVoiceSfx] Death sound played on {gameObject.name}");
-            return;
-        }
-
-        AudioSource.PlayClipAtPoint(clip, pos, vol);
+        PlayVoiceOneShot(clip, pitch, 1f);
         if (VerboseCombatVoiceLogs)
             Debug.Log($"[CombatVoiceSfx] Death sound played on {gameObject.name}");
     }
 
-    private void PlayVoiceOneShot(AudioClip clip, float pitch, float volume)
+    private void PlayVoiceOneShot(AudioClip clip, float pitch, float baseVolume)
     {
-        if (source == null)
-        {
-            AudioSource.PlayClipAtPoint(clip, transform.position, volume);
-            return;
-        }
-
-        source.pitch = pitch;
-        source.PlayOneShot(clip, volume);
+        CombatSfx3D.PlayCombatSfx3D(clip, transform.position, baseVolume, pitch, minDistance, maxDistance);
     }
 
     private static AudioClip PickRandom(AudioClip[] clips)

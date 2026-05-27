@@ -8,8 +8,8 @@ NativeFormatImporter:
   assetBundleVariant: 
 AssetOrigin:
   serializedVersion: 1
-  productId: 101429
-  packageName: RPG/FPS Game Assets for PC/Mobile (Industrial Set v3.0)
-  packageVersion: 3.0
-  assetPath: Assets/RPG_FPS_game_assets_industrial/Other_props/Electric_box/Electric_box_v1/Source/Electric_box_v1.mat
-  uploadId: 642814
+  productId: 86679
+  packageName: RPG/FPS Game Assets for PC/Mobile (Industrial Set v2.0)
+  packageVersion: 2.0
+  assetPath: Assets/_Shared/Imports/RPG_FPS_game_assets_industrial/Other_props/Electric_box/Electric_box_v1/Source/Electric_box_v1.mat
+  uploadId: 642626

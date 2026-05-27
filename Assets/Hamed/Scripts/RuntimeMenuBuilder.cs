@@ -982,6 +982,158 @@ public class RuntimeMenuBuilder : MonoBehaviour
             WinScreenCelebration fanfare = root.gameObject.AddComponent<WinScreenCelebration>();
             fanfare.Configure(titleTmp.rectTransform, bannerTmp, root);
         }
+
+        SanitizeResultsCanvasAndRebind(root, outcome, primaryButton);
+        StartCoroutine(ResultsButtonGuardRoutine(root, outcome, primaryButton));
+    }
+
+    private void SanitizeResultsCanvasAndRebind(Transform root, GameManager.MenuScreen outcome, string primaryLabel)
+    {
+        if (root == null) return;
+
+        Canvas canvas = root.GetComponentInParent<Canvas>();
+        if (canvas != null)
+        {
+            GraphicRaycaster raycaster = canvas.GetComponent<GraphicRaycaster>();
+            if (raycaster == null)
+                raycaster = canvas.gameObject.AddComponent<GraphicRaycaster>();
+            raycaster.enabled = true;
+            raycaster.blockingObjects = GraphicRaycaster.BlockingObjects.None;
+        }
+
+        EnsureEventSystem();
+
+        StripMissingScripts(root);
+
+        Button targetButton = FindResultsButtonByLabel(root, primaryLabel);
+        if (targetButton == null && outcome == GameManager.MenuScreen.LevelComplete)
+            targetButton = FindResultsButtonByLabel(root, "NEXT LEVEL");
+
+        if (targetButton == null) return;
+
+        targetButton.gameObject.SetActive(true);
+        targetButton.interactable = true;
+
+        Image img = targetButton.GetComponent<Image>();
+        if (img != null)
+            img.raycastTarget = true;
+
+        targetButton.onClick.RemoveAllListeners();
+        UnityEngine.Events.UnityAction bound = ResolvePrimaryActionForOutcome(outcome);
+        if (bound != null)
+            targetButton.onClick.AddListener(bound);
+
+        if (EventSystem.current != null)
+            EventSystem.current.SetSelectedGameObject(targetButton.gameObject);
+    }
+
+    private System.Collections.IEnumerator ResultsButtonGuardRoutine(Transform root, GameManager.MenuScreen outcome, string primaryLabel)
+    {
+        for (int i = 0; i < 30; i++)
+        {
+            yield return null;
+            if (root == null) yield break;
+            SanitizeResultsCanvasAndRebind(root, outcome, primaryLabel);
+        }
+    }
+
+    private static UnityEngine.Events.UnityAction ResolvePrimaryActionForOutcome(GameManager.MenuScreen outcome)
+    {
+        switch (outcome)
+        {
+            case GameManager.MenuScreen.LevelComplete:
+                return () =>
+                {
+                    Time.timeScale = 1f;
+                    if (GameManager.Instance != null)
+                        GameManager.Instance.LoadNextLevel();
+                    else
+                        UnityEngine.SceneManagement.SceneManager.LoadScene("GameScene");
+                };
+            case GameManager.MenuScreen.Victory:
+                return () =>
+                {
+                    Time.timeScale = 1f;
+                    if (GameManager.Instance != null)
+                        GameManager.Instance.StartRun(1);
+                    else
+                        UnityEngine.SceneManagement.SceneManager.LoadScene("GameScene");
+                };
+            case GameManager.MenuScreen.GameOver:
+                return () =>
+                {
+                    Time.timeScale = 1f;
+                    if (GameManager.Instance != null)
+                        GameManager.Instance.ReplayCurrentLevel();
+                    else
+                        UnityEngine.SceneManagement.SceneManager.LoadScene("GameScene");
+                };
+            default:
+                return () =>
+                {
+                    Time.timeScale = 1f;
+                    if (GameManager.Instance != null)
+                        GameManager.Instance.GoToMainMenu();
+                    else
+                        UnityEngine.SceneManagement.SceneManager.LoadScene("MainMenu");
+                };
+        }
+    }
+
+    private static Button FindResultsButtonByLabel(Transform root, string label)
+    {
+        if (root == null || string.IsNullOrEmpty(label)) return null;
+
+        string targetGoName = "ActiveBtn_" + label;
+        Transform[] all = root.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < all.Length; i++)
+        {
+            Transform t = all[i];
+            if (t == null) continue;
+            if (string.Equals(t.name, targetGoName, System.StringComparison.OrdinalIgnoreCase))
+            {
+                Button btn = t.GetComponent<Button>();
+                if (btn != null) return btn;
+            }
+        }
+
+        Button[] buttons = root.GetComponentsInChildren<Button>(true);
+        string normalized = label.Trim().ToUpperInvariant();
+        for (int i = 0; i < buttons.Length; i++)
+        {
+            Button btn = buttons[i];
+            if (btn == null) continue;
+            TMPro.TextMeshProUGUI tmp = btn.GetComponentInChildren<TMPro.TextMeshProUGUI>(true);
+            if (tmp != null && tmp.text != null
+                && tmp.text.Trim().ToUpperInvariant().Contains(normalized))
+                return btn;
+        }
+        return null;
+    }
+
+    private static void StripMissingScripts(Transform root)
+    {
+        if (root == null) return;
+        Transform[] all = root.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < all.Length; i++)
+        {
+            Transform t = all[i];
+            if (t == null) continue;
+#if UNITY_EDITOR
+            UnityEditor.GameObjectUtility.RemoveMonoBehavioursWithMissingScript(t.gameObject);
+#else
+            Component[] comps = t.GetComponents<Component>();
+            for (int c = 0; c < comps.Length; c++)
+            {
+                if (comps[c] == null)
+                {
+                    GraphicRaycaster gr = t.GetComponent<GraphicRaycaster>();
+                    if (gr != null) gr.enabled = true;
+                    break;
+                }
+            }
+#endif
+        }
     }
 
     void EnsureGameManager()
@@ -1044,6 +1196,7 @@ public class RuntimeMenuBuilder : MonoBehaviour
 
     void ToggleLevelSelect(Transform root)
     {
+        Debug.Log("[RuntimeMenuBuilder] ToggleLevelSelect invoked");
         Transform existing = root.Find("LevelSelectOverlay");
         if (existing != null)
         {
@@ -1065,17 +1218,52 @@ public class RuntimeMenuBuilder : MonoBehaviour
         GameObject panelObj = new GameObject("LevelSelectPanel");
         panelObj.transform.SetParent(overlayObj.transform, false);
         Image panel = panelObj.AddComponent<Image>();
-        // Closer to the older "clean blue" card look (more solid than the newer translucent panel).
         panel.color = new Color(0.14f, 0.20f, 0.36f, 0.62f);
         Outline panelOutline = panelObj.AddComponent<Outline>();
         panelOutline.effectColor = new Color(0.12f, 0.20f, 0.40f, 0.75f);
         panelOutline.effectDistance = new Vector2(2f, -2f);
 
-        // Tight panel: grid uses a fixed 4x4 size; avoid excess empty chrome.
-        SetCenteredRect(panelObj.GetComponent<RectTransform>(), new Vector2(1020f, 798f), new Vector2(0f, -6f));
+        // Enlarged from 1020x798 to 1020x920 to fit the SELECT MAP environment row.
+        SetCenteredRect(panelObj.GetComponent<RectTransform>(), new Vector2(1020f, 920f), new Vector2(0f, -6f));
 
-        MakeText(panelObj.transform, "SELECT LEVEL", 64, new Color(0.94f, 0.94f, 1f, 1f),
-            new Vector2(0.04f, 0.84f), new Vector2(0.96f, 0.98f), true);
+        // SELECT LEVEL title — compressed band at the very top.
+        MakeText(panelObj.transform, "SELECT LEVEL", 60, new Color(0.94f, 0.94f, 1f, 1f),
+            new Vector2(0.04f, 0.88f), new Vector2(0.96f, 0.985f), true);
+
+        // SELECT MAP label.
+        MakeText(panelObj.transform, "SELECT MAP", 28, new Color(0.95f, 0.85f, 0.45f, 1f),
+            new Vector2(0.04f, 0.815f), new Vector2(0.96f, 0.87f), true);
+
+        // Industrial / SciFi environment cards.
+        Button industrialBtn = MakePanelButton(panelObj.transform, "INDUSTRIAL",
+            new Vector2(0.07f, 0.71f), new Vector2(0.49f, 0.80f),
+            () =>
+            {
+                if (GameManager.Instance != null)
+                    GameManager.Instance.SetSelectedEnvironment(GameManager.ArenaEnvironment.Industrial);
+                RefreshEnvironmentCardColors(panelObj.transform);
+                Debug.Log("[RuntimeMenuBuilder] Industrial environment selected");
+            },
+            24f, false, true);
+
+        Button sciFiBtn = MakePanelButton(panelObj.transform, "SCIFI ARENA",
+            new Vector2(0.51f, 0.71f), new Vector2(0.93f, 0.80f),
+            () =>
+            {
+                if (GameManager.Instance != null)
+                    GameManager.Instance.SetSelectedEnvironment(GameManager.ArenaEnvironment.SciFi);
+                RefreshEnvironmentCardColors(panelObj.transform);
+                Debug.Log("[RuntimeMenuBuilder] SciFi environment selected");
+            },
+            24f, false, true);
+
+        if (industrialBtn != null) industrialBtn.gameObject.name = "EnvBtn_Industrial";
+        if (sciFiBtn != null) sciFiBtn.gameObject.name = "EnvBtn_SciFi";
+        ApplyDarkBlueButtonLabel(industrialBtn);
+        ApplyDarkBlueButtonLabel(sciFiBtn);
+        RefreshEnvironmentCardColors(panelObj.transform);
+        Debug.Log("[RuntimeMenuBuilder] Environment cards built: industrial=" + (industrialBtn != null) +
+                  " scifi=" + (sciFiBtn != null));
 
         // Unity: never use AddComponent<RectTransform>() on a plain GameObject — it is invalid.
         // Grid must be created with a RectTransform so GridLayoutGroup lays out all 16 cells.
@@ -1085,9 +1273,9 @@ public class RuntimeMenuBuilder : MonoBehaviour
         gridRT.anchorMin = new Vector2(0.5f, 0.5f);
         gridRT.anchorMax = new Vector2(0.5f, 0.5f);
         gridRT.pivot = new Vector2(0.5f, 0.5f);
-        // 4 * 160 + 3 * 18 + 40 padding = 734; 4 * 130 + 3 * 18 + 40 = 614
         gridRT.sizeDelta = new Vector2(736f, 614f);
-        gridRT.anchoredPosition = new Vector2(0f, -20f);
+        // Pushed down so it sits below the new environment row.
+        gridRT.anchoredPosition = new Vector2(0f, -110f);
 
         GridLayoutGroup grid = gridObj.AddComponent<GridLayoutGroup>();
         grid.cellSize = new Vector2(160f, 130f);
@@ -1150,6 +1338,46 @@ public class RuntimeMenuBuilder : MonoBehaviour
         if (root == null) return;
         Transform existing = root.Find(overlayName);
         if (existing != null) DestroyUiObject(existing.gameObject);
+    }
+
+    void ApplyDarkBlueButtonLabel(Button btn)
+    {
+        if (btn == null) return;
+        Color darkBlue = new Color(0.04f, 0.08f, 0.38f, 1f);
+        TextMeshProUGUI label = btn.GetComponentInChildren<TextMeshProUGUI>(true);
+        if (label != null) label.color = darkBlue;
+        MenuButtonHoverEffect hover = btn.GetComponent<MenuButtonHoverEffect>();
+        if (hover != null)
+        {
+            hover.normalTextColor = darkBlue;
+            hover.hoverTextColor = darkBlue;
+        }
+    }
+
+    void RefreshEnvironmentCardColors(Transform panel)
+    {
+        if (panel == null) return;
+        GameManager.ArenaEnvironment current = GameManager.Instance != null
+            ? GameManager.Instance.GetSelectedEnvironment()
+            : GameManager.ArenaEnvironment.Industrial;
+
+        Color selectedTint = new Color(0.55f, 0.32f, 0.95f, 1f);
+        Color defaultTint = Color.white;
+
+        Transform indBtn = panel.Find("EnvBtn_Industrial");
+        Transform sciBtn = panel.Find("EnvBtn_SciFi");
+        if (indBtn != null)
+        {
+            Image img = indBtn.GetComponent<Image>();
+            if (img != null)
+                img.color = (current == GameManager.ArenaEnvironment.Industrial) ? selectedTint : defaultTint;
+        }
+        if (sciBtn != null)
+        {
+            Image img = sciBtn.GetComponent<Image>();
+            if (img != null)
+                img.color = (current == GameManager.ArenaEnvironment.SciFi) ? selectedTint : defaultTint;
+        }
     }
 
     // ─── LEVEL TILE ─────────────────────────────────────────────────────────

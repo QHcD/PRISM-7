@@ -378,7 +378,9 @@ public class CameraController : MonoBehaviour
         // PlayerController writes `pitch` directly each frame; clamp it here
         // as the last line of defense so the rotation never escapes the
         // (minPitch, maxPitch) range no matter what the caller did.
-        pitch = Mathf.Clamp(pitch, minPitch, maxPitch);
+        pitch = Mathf.Clamp(IsFinite(pitch) ? pitch : 8f, minPitch, maxPitch);
+        if (!IsFinite(externalYaw))
+            externalYaw = target != null && IsFinite(target.eulerAngles.y) ? target.eulerAngles.y : 0f;
 
         Vector3 lookTarget = GetLookTarget();
         Vector3 currentOffset = GetCurrentOffset();
@@ -399,6 +401,8 @@ public class CameraController : MonoBehaviour
         // ── Build orbit rotation ─────────────────────────────────────────────
         // Horizontal from the player's Y rotation, vertical from mouse pitch.
         float yaw = useExternalYaw ? externalYaw : target.eulerAngles.y;
+        if (!IsFinite(yaw))
+            yaw = 0f;
         Quaternion orbitRot     = Quaternion.Euler(pitch, yaw, 0f);
         Vector3    desiredPos   = lookTarget + orbitRot * currentOffset;
 
@@ -760,10 +764,13 @@ public class CameraController : MonoBehaviour
         if (!IsFinite(desiredPos))
             desiredPos = target.position + Quaternion.Euler(0f, target.eulerAngles.y, 0f) * offset;
 
-        transform.position = desiredPos;
+        if (IsFinite(desiredPos))
+            transform.position = desiredPos;
         Vector3 fallbackCastOrigin = target.position + Vector3.up * 1.2f;
         Vector3 castOrigin = Vector3.Lerp(fallbackCastOrigin, lookTarget, 0.85f);
-        _currentDistance = Vector3.Distance(castOrigin, desiredPos);
+        _currentDistance = IsFinite(castOrigin) && IsFinite(desiredPos)
+            ? Vector3.Distance(castOrigin, desiredPos)
+            : GetCurrentOffset().magnitude;
         UpdateFieldOfView(immediate: true);
         if (IsFinite(lookTarget) && (lookTarget - transform.position).sqrMagnitude > 0.0001f)
             transform.LookAt(lookTarget);
@@ -780,7 +787,8 @@ public class CameraController : MonoBehaviour
         if (target == null || !IsFinite(target.position))
             return;
 
-        Vector3 fallback = target.position + Quaternion.Euler(0f, target.eulerAngles.y, 0f) * offset;
+        float yaw = IsFinite(target.eulerAngles.y) ? target.eulerAngles.y : 0f;
+        Vector3 fallback = target.position + Quaternion.Euler(0f, yaw, 0f) * offset;
         if (IsFinite(fallback))
             transform.position = fallback;
     }

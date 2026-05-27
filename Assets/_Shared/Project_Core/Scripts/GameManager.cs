@@ -26,6 +26,12 @@ public class GameManager : MonoBehaviour
         Victory
     }
 
+    public enum ArenaEnvironment
+    {
+        Industrial,
+        SciFi
+    }
+
     public enum ArenaMap
     {
         Map1,
@@ -122,6 +128,7 @@ public class GameManager : MonoBehaviour
     public bool  playerTookDamage    = false;
     public float levelTime           = 0f;
     public ArenaMap        selectedMap      = ArenaMap.Map1;
+    public ArenaEnvironment selectedEnvironment = ArenaEnvironment.Industrial;
     public PerspectiveMode perspectiveMode  = PerspectiveMode.ThirdPerson;
     public MovementScheme  movementScheme   = MovementScheme.Wasd;
 
@@ -153,6 +160,8 @@ public class GameManager : MonoBehaviour
 
     private bool _levelCompleteTriggered = false;
     private Coroutine _sceneLoadRoutine;
+    private Coroutine _retryFinalizeRoutine;
+    private bool _retryLoadPending;
 
     private static string _cachedRetrySceneName = "GameScene";
     private static int _cachedRetrySceneBuildIndex = -1;
@@ -327,6 +336,7 @@ public class GameManager : MonoBehaviour
     {
         difficulty      = PlayerPrefs.GetString("Difficulty", difficulty);
         selectedMap     = (ArenaMap)Mathf.Clamp(PlayerPrefs.GetInt("SelectedMap", (int)selectedMap), 0, 1);
+        selectedEnvironment = (ArenaEnvironment)Mathf.Clamp(PlayerPrefs.GetInt("SelectedEnvironment", (int)selectedEnvironment), 0, 1);
         // Third-person only: if older saves stored FirstPerson, ignore and overwrite.
         perspectiveMode = PerspectiveMode.ThirdPerson;
         int persistedPerspective = Mathf.Clamp(PlayerPrefs.GetInt("PerspectiveMode", (int)PerspectiveMode.ThirdPerson), 0, 1);
@@ -355,6 +365,14 @@ public class GameManager : MonoBehaviour
     {
         if (scene.name == "GameScene" || scene.name == MultiplayerMode.MultiplayerSceneName)
             CacheActiveGameplaySession(scene);
+
+        if (_retryLoadPending && IsSinglePlayerGameplayScene(scene.name))
+        {
+            _retryLoadPending = false;
+            if (_retryFinalizeRoutine != null)
+                StopCoroutine(_retryFinalizeRoutine);
+            _retryFinalizeRoutine = StartCoroutine(FinalizeRetryReloadNextFrames());
+        }
 
         if (!scene.name.Equals("GameScene"))
             return;
@@ -457,6 +475,15 @@ public class GameManager : MonoBehaviour
     {
         selectedMap = map;
         PlayerPrefs.SetInt("SelectedMap", (int)map);
+        PlayerPrefs.Save();
+    }
+
+    public ArenaEnvironment GetSelectedEnvironment() => selectedEnvironment;
+
+    public void SetSelectedEnvironment(ArenaEnvironment env)
+    {
+        selectedEnvironment = env;
+        PlayerPrefs.SetInt("SelectedEnvironment", (int)env);
         PlayerPrefs.Save();
     }
 
@@ -595,18 +622,34 @@ public class GameManager : MonoBehaviour
 
         MultiplayerMode.SetSinglePlayer();
         Time.timeScale = 1f;
+        Time.fixedDeltaTime = 0.02f;
+        EndMatchCinematic.GameplayLocked = false;
+        HealthManager.ReleaseStartupProtection();
         if (MatchStatsManager.Instance != null)
             MatchStatsManager.Instance.ResetMatch();
+        if (SessionManager.Instance != null)
+            SessionManager.Instance.BeginMatch();
 
         int level = _cachedRetryLevel > 0 ? _cachedRetryLevel : currentLevel;
         SetCurrentLevel(level);
 
-        string sceneName = string.IsNullOrEmpty(_cachedRetrySceneName) ? "GameScene" : _cachedRetrySceneName;
-        Debug.Log($"[Retry] reloading scene = {sceneName} index = {_cachedRetrySceneBuildIndex} level = {level}");
-
         ResetLevelState();
         PendingMenuScreen = MenuScreen.MainMenu;
-        BeginSceneLoad(sceneName);
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
+
+        string sceneName = ResolveRetrySceneName();
+        int sceneIndex = ResolveRetrySceneBuildIndex(sceneName);
+        Debug.Log($"[Retry] reloading scene = {sceneName} index = {sceneIndex} level = {level}");
+
+        _retryLoadPending = true;
+        if (_sceneLoadRoutine != null)
+        {
+            StopCoroutine(_sceneLoadRoutine);
+            _sceneLoadRoutine = null;
+        }
+
+        LoadRetryScene(sceneName, sceneIndex);
     }
 
     public void ReplayMultiplayerMatch()
@@ -647,6 +690,113 @@ public class GameManager : MonoBehaviour
         ResetLevelState();
     }
 
+    private static bool IsSinglePlayerGameplayScene(string sceneName)
+    {
+        return string.Equals(sceneName, MultiplayerMode.SinglePlayerSceneName, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(sceneName, "GameScene", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ResolveRetrySceneName()
+    {
+        Scene active = SceneManager.GetActiveScene();
+        if (active.IsValid() && active.isLoaded && IsSinglePlayerGameplayScene(active.name) && SceneExistsInBuild(active.name))
+            return active.name;
+
+        if (!string.IsNullOrEmpty(_cachedRetrySceneName)
+            && IsSinglePlayerGameplayScene(_cachedRetrySceneName)
+            && SceneExistsInBuild(_cachedRetrySceneName))
+            return _cachedRetrySceneName;
+
+        if (_cachedRetrySceneBuildIndex >= 0)
+        {
+            string indexedScene = SceneNameForBuildIndex(_cachedRetrySceneBuildIndex);
+            if (IsSinglePlayerGameplayScene(indexedScene))
+                return indexedScene;
+        }
+
+        return MultiplayerMode.SinglePlayerSceneName;
+    }
+
+    private static int ResolveRetrySceneBuildIndex(string sceneName)
+    {
+        int count = SceneManager.sceneCountInBuildSettings;
+        for (int i = 0; i < count; i++)
+        {
+            string path = SceneUtility.GetScenePathByBuildIndex(i);
+            if (string.Equals(
+                    System.IO.Path.GetFileNameWithoutExtension(path),
+                    sceneName,
+                    StringComparison.OrdinalIgnoreCase))
+                return i;
+        }
+
+        return -1;
+    }
+
+    private static string SceneNameForBuildIndex(int buildIndex)
+    {
+        if (buildIndex < 0 || buildIndex >= SceneManager.sceneCountInBuildSettings)
+            return string.Empty;
+
+        string path = SceneUtility.GetScenePathByBuildIndex(buildIndex);
+        return System.IO.Path.GetFileNameWithoutExtension(path);
+    }
+
+    private void LoadRetryScene(string sceneName, int sceneIndex)
+    {
+        try
+        {
+            if (SceneExistsInBuild(sceneName))
+            {
+                SceneManager.LoadScene(sceneName, LoadSceneMode.Single);
+                return;
+            }
+
+            if (sceneIndex >= 0 && sceneIndex < SceneManager.sceneCountInBuildSettings)
+            {
+                SceneManager.LoadScene(sceneIndex, LoadSceneMode.Single);
+                return;
+            }
+
+            Debug.LogWarning($"[Retry] Gameplay scene '{sceneName}' is not in Build Settings; falling back to {MultiplayerMode.SinglePlayerSceneName}.");
+            SceneManager.LoadScene(MultiplayerMode.SinglePlayerSceneName, LoadSceneMode.Single);
+        }
+        catch (Exception e)
+        {
+            _retryLoadPending = false;
+            Debug.LogError($"[Retry] failed to reload gameplay scene '{sceneName}': {e.Message}");
+            GoToMainMenu();
+        }
+    }
+
+    private IEnumerator FinalizeRetryReloadNextFrames()
+    {
+        yield return null;
+        yield return null;
+
+        Time.timeScale = 1f;
+        Time.fixedDeltaTime = 0.02f;
+        EndMatchCinematic.GameplayLocked = false;
+        HealthManager.ReleaseStartupProtection();
+        LevelManager.RunFrameZeroRuntimeSync();
+
+        Cursor.lockState = CursorLockMode.Locked;
+        Cursor.visible = false;
+
+        PlayerController pc = FindFirstObjectByType<PlayerController>();
+        if (pc != null)
+        {
+            pc.enabled = true;
+            CharacterController cc = pc.GetComponent<CharacterController>();
+            if (cc != null) cc.enabled = true;
+        }
+
+        if (HUDManager.Instance != null)
+            HUDManager.Instance.ApplySinglePlayerGameplayState();
+
+        _retryFinalizeRoutine = null;
+    }
+
     /// <summary>
     /// Match length in seconds. Default match length is 5 minutes (300s).
     /// In a Custom Match, the player picks 2/5/10 minutes via the menu and
@@ -675,7 +825,9 @@ public class GameManager : MonoBehaviour
 
     public float GetEnemyDamage()
     {
-        float baseDamage = 7.5f + ((currentLevel - 1) * 0.45f);
+        // Base 7.0 per hit on Normal level 1 (user requested), milder scaling so
+        // late-game doesn't spike. Easy/Hard/Veteran preserve relative difficulty.
+        float baseDamage = 7f + ((currentLevel - 1) * 0.30f);
         switch (ActiveDifficulty)
         {
             case "Easy":    return baseDamage * 0.82f;

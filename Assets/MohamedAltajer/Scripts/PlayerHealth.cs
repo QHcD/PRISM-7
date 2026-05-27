@@ -29,6 +29,14 @@ public class PlayerHealth : MonoBehaviour, IDamageable
     private string _lastAttackerStatsId;
     private bool _deathHandled;
 
+    // Anti-burst damage cap (single-player only). Prevents a group of melee
+    // enemies in melee range from one-second-bursting the player to zero HP.
+    // Up to DamageWindowCap damage per DamageWindowSeconds; surplus is dropped.
+    private float _damageWindowStart;
+    private float _damageInWindow;
+    private const float DamageWindowSeconds = 0.6f;
+    private const float DamageWindowCap = 14f;
+
     private void Awake()
     {
         currentHealth = Mathf.Clamp(currentHealth, 0f, maxHealth);
@@ -96,6 +104,33 @@ public class PlayerHealth : MonoBehaviour, IDamageable
 
         float before = currentHealth;
         float absorbed = Mathf.Abs(amount);
+
+        // Single-player burst cap: aggregate damage in a sliding window.
+        // Multiplayer is left untouched so PvP hits land normally.
+        if (!MultiplayerMode.IsMultiplayer)
+        {
+            float now = Time.time;
+            if (now - _damageWindowStart > DamageWindowSeconds)
+            {
+                _damageWindowStart = now;
+                _damageInWindow = 0f;
+            }
+            float remaining = Mathf.Max(0f, DamageWindowCap - _damageInWindow);
+            if (absorbed > remaining)
+            {
+                if (VerboseHealthLogs)
+                    Debug.Log($"[Health] burst cap absorbed extra={absorbed - remaining} amount={absorbed} remaining={remaining}");
+                absorbed = remaining;
+            }
+            if (absorbed <= 0f)
+            {
+                if (VerboseHealthLogs)
+                    Debug.Log($"[Health] burst cap fully blocked incoming damage");
+                return;
+            }
+            _damageInWindow += absorbed;
+        }
+
         currentHealth = Mathf.Max(0f, currentHealth - absorbed);
 
         if (VerboseHealthLogs)

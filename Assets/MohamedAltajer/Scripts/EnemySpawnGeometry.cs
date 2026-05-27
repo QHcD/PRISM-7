@@ -14,6 +14,23 @@ public static class EnemySpawnGeometry
     /// </summary>
     public static bool AllowEnclosedArena = false;
 
+    /// <summary>
+    /// When true, IsValidOutdoorSpawn REQUIRES the candidate to be indoors
+    /// (ceiling overhead + nearby walls). This blocks rooftop, void, and
+    /// open-sky spawns for interior arenas where every enemy must land
+    /// inside a roofed room or corridor. Set for SciFiArena.
+    /// </summary>
+    public static bool RequireIndoor = false;
+
+    /// <summary>
+    /// When true, IsValidOutdoorSpawn logs the reason a candidate was
+    /// rejected. Off by default to avoid log spam.
+    /// </summary>
+    public static bool DebugRejections = false;
+
+    /// <summary>Set by IsValidOutdoorSpawn on rejection so callers can log it.</summary>
+    public static string LastRejectionReason = string.Empty;
+
     private const float MinWallClearance = 0.85f;
     private const float MaxFeetBelowGround = 0.12f;
     private const float MaxFeetAboveGround = 0.35f;
@@ -113,28 +130,36 @@ public static class EnemySpawnGeometry
     {
         if (rejectRooftops && playerNavPos != default &&
             (candidate.y - playerNavPos.y) > LevelBuilder.MaxSpawnYAbovePlayer)
-            return false;
+            return RejectWithReason($"above player rooftop: y={candidate.y:F2} playerY={playerNavPos.y:F2}");
 
         if (!TryAlignFeetToGround(candidate, out Vector3 feet))
-            return false;
+            return RejectWithReason($"no walkable ground beneath {candidate}");
 
-        // Full-capsule overlap check against solid static geometry.
-        // Catches "buried in a wall" candidates that the sphere-only
-        // chest probe and 8-direction wall rays can miss (corners,
-        // narrow alcoves, stair undersides, container interiors).
         if (!IsCapsuleClearOfStaticGeometry(feet))
-            return false;
+            return RejectWithReason($"capsule blocked by static geometry at {feet}");
 
         if (!HasSpawnGroundAndClearance(feet, RequiredHeadroom))
-            return false;
+            return RejectWithReason($"insufficient headroom or ground at {feet}");
 
         if (!HasHorizontalWallClearance(feet))
-            return false;
+            return RejectWithReason($"too close to wall at {feet}");
 
-        if (!AllowEnclosedArena && IsEnclosedOrIndoor(feet))
-            return false;
+        bool indoor = IsEnclosedOrIndoor(feet);
+        if (RequireIndoor && !indoor)
+            return RejectWithReason($"not indoors (no ceiling+walls) at {feet}");
+        if (!AllowEnclosedArena && indoor)
+            return RejectWithReason($"enclosed area not allowed at {feet}");
 
+        LastRejectionReason = string.Empty;
         return true;
+    }
+
+    private static bool RejectWithReason(string reason)
+    {
+        LastRejectionReason = reason;
+        if (DebugRejections)
+            Debug.Log($"[SpawnGeometry] rejected: {reason}");
+        return false;
     }
 
     /// <summary>

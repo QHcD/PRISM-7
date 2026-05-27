@@ -20,6 +20,10 @@ public class LevelSelectBuilder : MonoBehaviour
     private Button _map1Btn;
     private Button _map2Btn;
 
+    // Environment cards (Industrial vs SciFi). Independent of Map1/Map2 variant.
+    private Button _envIndustrialBtn;
+    private Button _envSciFiBtn;
+
     // Tracks which level button is selected
     private int _selectedLevel = -1;
     private Button[] _levelButtons;
@@ -43,33 +47,51 @@ public class LevelSelectBuilder : MonoBehaviour
         if (prismBackground) { bg.sprite = prismBackground; bg.color = Color.white; }
 
         // ── Title ─────────────────────────────────────────────────────────────
-        MakeText(canvasObj.transform, "SELECT LEVEL", 60, new Color(0.6f, 0.2f, 1f, 1f),
-            new Vector2(0f, 0.90f), new Vector2(1f, 0.99f), true);
+        MakeText(canvasObj.transform, "SELECT LEVEL", 56, new Color(0.6f, 0.2f, 1f, 1f),
+            new Vector2(0f, 0.92f), new Vector2(1f, 0.99f), true);
 
-        // ── Map Selection Panel ───────────────────────────────────────────────
-        MakeText(canvasObj.transform, "CHOOSE MAP", 28, new Color(0.8f, 0.8f, 0.8f, 1f),
-            new Vector2(0.15f, 0.83f), new Vector2(0.85f, 0.90f), false);
+        // ── Environment Selection (Industrial / SciFi) ───────────────────────
+        MakeText(canvasObj.transform, "SELECT MAP", 30, new Color(0.95f, 0.85f, 0.45f, 1f),
+            new Vector2(0.15f, 0.86f), new Vector2(0.85f, 0.91f), true);
 
-        // Map panel background
+        Image envPanel = new GameObject("EnvironmentPanel").AddComponent<Image>();
+        envPanel.transform.SetParent(canvasObj.transform, false);
+        envPanel.color = new Color(0.08f, 0.10f, 0.20f, 0.75f);
+        RectTransform epRect = envPanel.GetComponent<RectTransform>();
+        epRect.anchorMin = new Vector2(0.15f, 0.76f);
+        epRect.anchorMax = new Vector2(0.85f, 0.85f);
+        epRect.offsetMin = epRect.offsetMax = Vector2.zero;
+
+        _envIndustrialBtn = MakeMapButton(canvasObj.transform, "INDUSTRIAL  (Recommended)",
+            new Vector2(0.17f, 0.77f), new Vector2(0.49f, 0.84f),
+            () => SelectEnvironment(GameManager.ArenaEnvironment.Industrial));
+
+        _envSciFiBtn = MakeMapButton(canvasObj.transform, "SCIFI ARENA",
+            new Vector2(0.51f, 0.77f), new Vector2(0.83f, 0.84f),
+            () => SelectEnvironment(GameManager.ArenaEnvironment.SciFi));
+
+        RefreshEnvironmentHighlight();
+
+        // ── Map Variant Panel (NukeTown / City) ──────────────────────────────
+        MakeText(canvasObj.transform, "MAP VARIANT", 22, new Color(0.7f, 0.7f, 0.7f, 1f),
+            new Vector2(0.15f, 0.715f), new Vector2(0.85f, 0.75f), false);
+
         Image mapPanel = new GameObject("MapPanel").AddComponent<Image>();
         mapPanel.transform.SetParent(canvasObj.transform, false);
         mapPanel.color = new Color(0.08f, 0.08f, 0.18f, 0.7f);
         RectTransform mpRect = mapPanel.GetComponent<RectTransform>();
-        mpRect.anchorMin = new Vector2(0.15f, 0.74f);
-        mpRect.anchorMax = new Vector2(0.85f, 0.83f);
+        mpRect.anchorMin = new Vector2(0.15f, 0.65f);
+        mpRect.anchorMax = new Vector2(0.85f, 0.72f);
         mpRect.offsetMin = mpRect.offsetMax = Vector2.zero;
 
-        // Map 1 button
         _map1Btn = MakeMapButton(canvasObj.transform, "MAP 1  (NukeTown)",
-            new Vector2(0.17f, 0.75f), new Vector2(0.49f, 0.82f),
+            new Vector2(0.17f, 0.66f), new Vector2(0.49f, 0.71f),
             () => SelectMap(GameManager.ArenaMap.Map1));
 
-        // Map 2 button
         _map2Btn = MakeMapButton(canvasObj.transform, "MAP 2  (City)",
-            new Vector2(0.51f, 0.75f), new Vector2(0.83f, 0.82f),
+            new Vector2(0.51f, 0.66f), new Vector2(0.83f, 0.71f),
             () => SelectMap(GameManager.ArenaMap.Map2));
 
-        // Highlight the currently saved map
         RefreshMapHighlight();
 
         // ── Level Grid Panel ──────────────────────────────────────────────────
@@ -77,8 +99,8 @@ public class LevelSelectBuilder : MonoBehaviour
         panel.transform.SetParent(canvasObj.transform, false);
         panel.color = new Color(0.1f, 0.1f, 0.2f, 0.5f);
         RectTransform panelRect = panel.GetComponent<RectTransform>();
-        panelRect.anchorMin = new Vector2(0.15f, 0.22f);
-        panelRect.anchorMax = new Vector2(0.85f, 0.73f);
+        panelRect.anchorMin = new Vector2(0.15f, 0.21f);
+        panelRect.anchorMax = new Vector2(0.85f, 0.64f);
         panelRect.offsetMin = panelRect.offsetMax = Vector2.zero;
 
         Outline outl = panel.gameObject.AddComponent<Outline>();
@@ -260,6 +282,33 @@ public class LevelSelectBuilder : MonoBehaviour
             _map1Btn.GetComponent<Image>().color = (current == GameManager.ArenaMap.Map1) ? selectedCol : defaultCol;
         if (_map2Btn != null)
             _map2Btn.GetComponent<Image>().color = (current == GameManager.ArenaMap.Map2) ? selectedCol : defaultCol;
+    }
+
+    // ── Environment selection (Industrial vs SciFi) ───────────────────────────
+
+    private void SelectEnvironment(GameManager.ArenaEnvironment env)
+    {
+        if (GameManager.Instance != null)
+            GameManager.Instance.SetSelectedEnvironment(env);
+        RefreshEnvironmentHighlight();
+        RefreshPlayButton();
+    }
+
+    private void RefreshEnvironmentHighlight()
+    {
+        GameManager.ArenaEnvironment current = GameManager.Instance != null
+            ? GameManager.Instance.GetSelectedEnvironment()
+            : GameManager.ArenaEnvironment.Industrial;
+
+        Color selectedCol = new Color(0.55f, 0.32f, 0.95f, 1f);
+        Color defaultCol  = new Color(0.18f, 0.20f, 0.32f, 1f);
+
+        if (_envIndustrialBtn != null)
+            _envIndustrialBtn.GetComponent<Image>().color =
+                (current == GameManager.ArenaEnvironment.Industrial) ? selectedCol : defaultCol;
+        if (_envSciFiBtn != null)
+            _envSciFiBtn.GetComponent<Image>().color =
+                (current == GameManager.ArenaEnvironment.SciFi) ? selectedCol : defaultCol;
     }
 
     // ── Widget helpers ────────────────────────────────────────────────────────

@@ -53,6 +53,10 @@ public class WeaponCombatAudio : MonoBehaviour
     public Vector2 pitchJitter = new Vector2(0.94f, 1.06f);
     [Tooltip("Multiplicative volume jitter applied on top of hitVolume for organic variation.")]
     public Vector2 hitVolumeJitter = new Vector2(0.90f, 1.00f);
+    [Tooltip("Combat SFX are full 3D and begin falling off after this distance.")]
+    public float combatMinDistance = CombatSfx3D.DefaultMinDistance;
+    [Tooltip("Combat SFX beyond this listener distance are skipped entirely.")]
+    public float combatMaxDistance = CombatSfx3D.DefaultMaxDistance;
 
     [Header("Hit Spam Guard")]
     [Tooltip("Minimum seconds between two hit-sound plays for the same (attacker, target, level) triple. " +
@@ -88,14 +92,8 @@ public class WeaponCombatAudio : MonoBehaviour
         if (_source == null)
         {
             _source = gameObject.AddComponent<AudioSource>();
-            _source.playOnAwake = false;
-            _source.loop = false;
         }
-        // Force spatial 3D audio blend between 0.8 and 1.0 (default to 0.9f)
-        _source.spatialBlend = 0.9f;
-        _source.minDistance = 1.0f;
-        _source.maxDistance = 50.0f;
-        _source.rolloffMode = AudioRolloffMode.Linear;
+        CombatSfx3D.ConfigureCombatSource(_source, combatMinDistance, combatMaxDistance);
     }
 
     private void OnEnable()
@@ -163,12 +161,12 @@ public class WeaponCombatAudio : MonoBehaviour
     {
         bool found = TryGetRow(category, out CategoryAudio row);
         AudioClip clip = found && row.swing != null ? row.swing : genericSwing;
-        PlayOneShotScaled(clip, swingVolume);
+        Transform spawnAt = handTransform != null ? handTransform : transform;
+        PlayOneShotScaled(clip, swingVolume, spawnAt.position);
 
         GameObject trail = found && row.swingTrailPrefab != null ? row.swingTrailPrefab : genericSwingTrailPrefab;
         if (trail != null)
         {
-            Transform spawnAt = handTransform != null ? handTransform : transform;
             SpawnTimed(trail, spawnAt.position, spawnAt.rotation, spawnAt);
         }
     }
@@ -268,27 +266,21 @@ public class WeaponCombatAudio : MonoBehaviour
     private void PlayOneShotScaled(AudioClip clip, float baseVol)
     {
         if (clip == null || _source == null) return;
-        _source.pitch = Random.Range(pitchJitter.x, pitchJitter.y);
-        _source.PlayOneShot(clip, AudioSettingsRuntime.ScaledSfx(Mathf.Max(0f, baseVol)));
+        PlayOneShotScaled(clip, baseVol, transform.position);
     }
 
     private void PlayOneShotScaled(AudioClip clip, float baseVol, Vector3 worldPos)
     {
         if (clip == null) return;
-        
-        if (_source != null)
-        {
-            _source.spatialBlend = 0.9f;
-            float scaledVol = AudioSettingsRuntime.ScaledSfx(Mathf.Max(0f, baseVol));
-            float finalVolume = Mathf.Clamp(scaledVol, 0.7f, 1.0f);
-            
-            _source.pitch = Random.Range(pitchJitter.x, pitchJitter.y);
-            _source.PlayOneShot(clip, finalVolume);
-        }
-        else
-        {
-            AudioSource.PlayClipAtPoint(clip, worldPos, AudioSettingsRuntime.ScaledSfx(Mathf.Max(0f, baseVol)));
-        }
+
+        float pitch = Random.Range(pitchJitter.x, pitchJitter.y);
+        CombatSfx3D.PlayCombatSfx3D(
+            clip,
+            worldPos,
+            Mathf.Max(0f, baseVol),
+            pitch,
+            combatMinDistance,
+            combatMaxDistance);
     }
 
     private void SpawnTimed(GameObject prefab, Vector3 pos, Quaternion rot, Transform parent)
