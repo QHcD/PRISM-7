@@ -395,11 +395,19 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     // ════════════════════════════════════════════════════════════════════════
 
     private static readonly int HashSpeed     = Animator.StringToHash("Speed");
+    private static readonly int HashMoveSpeed = Animator.StringToHash("MoveSpeed");
+    private static readonly int HashMoveX     = Animator.StringToHash("MoveX");
+    private static readonly int HashMoveY     = Animator.StringToHash("MoveY");
+    private static readonly int HashVelocityX = Animator.StringToHash("VelocityX");
+    private static readonly int HashVelocityZ = Animator.StringToHash("VelocityZ");
     private static readonly int HashAttack    = Animator.StringToHash("Attack");
+    private static readonly int HashJumpOver  = Animator.StringToHash("JumpOver");
+    private static readonly int HashSlide     = Animator.StringToHash("Slide");
     private static readonly int HashDead      = Animator.StringToHash("Dead");
     private static readonly int HashGrounded  = Animator.StringToHash("IsGrounded");
     private static readonly int HashAttacking = Animator.StringToHash("IsAttacking");
     private static readonly int HashSprinting = Animator.StringToHash("IsSprinting");
+    private static readonly int HashMoving    = Animator.StringToHash("IsMoving");
 
     private HashSet<int> _animParameterHashes;
     private int _cachedGroundMask;
@@ -2423,6 +2431,10 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
                 "Combat failsafe will clear the attack lock automatically.",
                 this);
         }
+        else
+        {
+            AnimFireTrigger(activeAnimator, HashAttack);
+        }
 
         FireAttack();
         SendNetworkAttackVisual();
@@ -2686,7 +2698,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         horizontalVelocity = slideDirection.normalized * powerSlideBoost;
 
         Animator slideAnim = GetActiveAnimator();
-        if (slideAnim != null) AnimFireTrigger(slideAnim, "Slide");
+        if (slideAnim != null) AnimFireTrigger(slideAnim, HashSlide);
 
         if (_tacticalActions != null)
             _tacticalActions.BeginSlide();
@@ -2705,7 +2717,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         verticalVelocity.y = -GetGroundedStickVelocity();
 
         Animator anim = GetActiveAnimator();
-        if (anim != null) AnimFireTrigger(anim, "JumpOver");
+        if (anim != null) AnimFireTrigger(anim, HashJumpOver);
 
         if (_tacticalActions != null)
             _tacticalActions.BeginJumpOver();
@@ -3542,7 +3554,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
 
         Animator activeAnimator = GetActiveAnimator();
         if (activeAnimator != null)
-            AnimFireTrigger(activeAnimator, "Attack");
+            AnimFireTrigger(activeAnimator, HashAttack);
 
         if (audioSource != null && swordSwing != null)
             audioSource.PlayOneShot(swordSwing, AudioSettingsRuntime.ScaledSfx(0.8f));
@@ -3678,50 +3690,55 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         // it stays snappy at 0.08s. MoveX/MoveY drive the 2D blend tree axes
         // and benefit from a touch more smoothing (0.12s) so direction flips
         // during turn-in don't visually pop between strafe and forward poses.
-        bool droveSpeedParameter = AnimSetFloat(anim, "Speed", normalizedSpeed, 0.08f);
-        AnimSetFloat(anim, "MoveX", moveX, 0.12f);
-        AnimSetFloat(anim, "MoveY", moveY, 0.12f);
+        bool droveSpeedParameter = AnimSetFloat(anim, HashSpeed, normalizedSpeed, 0.08f);
+        AnimSetFloat(anim, HashMoveSpeed, normalizedSpeed, 0.08f);
+        AnimSetFloat(anim, HashMoveX, moveX, 0.12f);
+        AnimSetFloat(anim, HashMoveY, moveY, 0.12f);
+        AnimSetFloat(anim, HashVelocityX, moveX, 0.12f);
+        AnimSetFloat(anim, HashVelocityZ, moveY, 0.12f);
 
         if (!droveSpeedParameter)
             ForceLocomotionState(anim, normalizedSpeed);
 
-        AnimSetBool(anim, "IsAttacking", isAttacking);
-        AnimSetBool(anim, "IsGrounded", isGrounded || IsGroundedForJump());
-        AnimSetBool(anim, "IsSprinting", isSprinting);
+        bool moving = normalizedSpeed > 0.03f;
+        AnimSetBool(anim, HashAttacking, isAttacking);
+        AnimSetBool(anim, HashGrounded, isGrounded || IsGroundedForJump());
+        AnimSetBool(anim, HashSprinting, isSprinting);
+        AnimSetBool(anim, HashMoving, moving);
     }
 
     // ── Direct, timing-safe param helpers ────────────────────────────────────
     // Query animator.parameters every call — no HashSet that can be stale.
 
-    private static bool AnimSetFloat(Animator anim, string name, float value, float damp = 0f)
+    private static bool AnimSetFloat(Animator anim, int hash, float value, float damp = 0f)
     {
         foreach (AnimatorControllerParameter p in anim.parameters)
         {
-            if (p.name != name || p.type != AnimatorControllerParameterType.Float) continue;
-            if (damp > 0f) anim.SetFloat(name, value, damp, Time.deltaTime);
-            else           anim.SetFloat(name, value);
+            if (p.nameHash != hash || p.type != AnimatorControllerParameterType.Float) continue;
+            if (damp > 0f) anim.SetFloat(hash, value, damp, Time.deltaTime);
+            else           anim.SetFloat(hash, value);
             return true;
         }
         return false;
     }
 
-    private static bool AnimSetBool(Animator anim, string name, bool value)
+    private static bool AnimSetBool(Animator anim, int hash, bool value)
     {
         foreach (AnimatorControllerParameter p in anim.parameters)
         {
-            if (p.name != name || p.type != AnimatorControllerParameterType.Bool) continue;
-            anim.SetBool(name, value);
+            if (p.nameHash != hash || p.type != AnimatorControllerParameterType.Bool) continue;
+            anim.SetBool(hash, value);
             return true;
         }
         return false;
     }
 
-    private static bool AnimFireTrigger(Animator anim, string name)
+    private static bool AnimFireTrigger(Animator anim, int hash)
     {
         foreach (AnimatorControllerParameter p in anim.parameters)
         {
-            if (p.name != name || p.type != AnimatorControllerParameterType.Trigger) continue;
-            anim.SetTrigger(name);
+            if (p.nameHash != hash || p.type != AnimatorControllerParameterType.Trigger) continue;
+            anim.SetTrigger(hash);
             return true;
         }
         return false;
