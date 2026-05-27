@@ -4033,6 +4033,7 @@ public class LevelBuilder : MonoBehaviour
         // Surgical port from backup: verify the enemy weapon is actually
         // attached + visible, retry once with the same prefab if not.
         RestoreEnemyWeaponPresence(controller, weaponPrefab, targetSize, level);
+        controller.EnsureVisibleWeaponEquipped("level_builder_attach");
     }
 
     private static void RestorePlayerWeaponPresence(PlayerController player)

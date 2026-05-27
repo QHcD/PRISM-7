@@ -113,6 +113,10 @@ public class EnemyController : MonoBehaviour, IDamageable
     public Vector3 weaponSocketLocalEulerAngles = Vector3.zero;
     [Tooltip("When enabled, continuously removes the animated hand bone basis so the weapon can keep a player-matched pose on Crosby.")]
     public bool stabilizeWeaponSocketAgainstHandPose = false;
+    [Tooltip("Runtime safety net: reattach or repair the enemy weapon if its mesh is missing, hidden, or collapsed.")]
+    public bool enforceVisibleWeapon = true;
+    [Tooltip("Logs enemy weapon visibility repairs. Keep disabled in normal builds.")]
+    public bool debugWeaponVisibility = false;
 
     [Header("Level 2 Katana — Hand Grip")]
     [Tooltip("Offset FROM the hand bone TO the katana grip point, in the hand bone's local space.\n" +
@@ -156,6 +160,8 @@ public class EnemyController : MonoBehaviour, IDamageable
     public bool useSavedRuntimeGripValues = true;
 
     [HideInInspector] public GameObject equippedWeaponObject;
+    private float _nextWeaponVisibilityCheckTime;
+    private int _weaponVisibilityRepairAttempts;
 
     [Header("FFA Target Detection")]
     [Tooltip("Layer mask for valid targets (set to 'Character' layer).")]
@@ -645,6 +651,7 @@ public class EnemyController : MonoBehaviour, IDamageable
         _idleTimer = 0f;
         CachePlayerTransform();
         _aiFsm.SetState(_state, true);
+        EnsureVisibleWeaponEquipped("start");
     }
 
     public void ClearTarget() => _target = null;
@@ -1282,6 +1289,8 @@ public class EnemyController : MonoBehaviour, IDamageable
                 equippedWeaponObject.transform.position = _activeWeaponHandBone.position;
             }
         }
+
+        TickWeaponVisibilityGuard();
     }
 
 
@@ -4250,6 +4259,148 @@ public class EnemyController : MonoBehaviour, IDamageable
             if (grip != null)
                 katanaHandler.BindKatana(grip);
         }
+    }
+
+    private void TickWeaponVisibilityGuard()
+    {
+        if (!enforceVisibleWeapon || _state == AIStateId.Dead)
+            return;
+        if (Time.time < _nextWeaponVisibilityCheckTime)
+            return;
+
+        _nextWeaponVisibilityCheckTime = Time.time + (_weaponVisibilityRepairAttempts < 3 ? 0.45f : 2.0f);
+        string guardReason;
+        if (!WeaponIsVisiblyEquipped(equippedWeaponObject, GetEquippedWeaponLevel(), out guardReason))
+            EnsureVisibleWeaponEquipped("visibility_guard");
+    }
+
+    public void EnsureVisibleWeaponEquipped(string reason)
+    {
+        if (!enforceVisibleWeapon || _weaponAttachInProgress || _state == AIStateId.Dead)
+            return;
+
+        int level = GetEquippedWeaponLevel();
+        if (level <= 0)
+            level = GameManager.Instance != null ? GameManager.Instance.currentLevel : 1;
+
+        if (WeaponIsVisiblyEquipped(equippedWeaponObject, level, out string validReason))
+            return;
+
+        WeaponLoadout loadout = WeaponLoadoutCatalog.Get(level);
+        float targetSize = loadout.TargetSize;
+        GameObject weaponPrefab = _equippedWeaponPrefab != null ? _equippedWeaponPrefab : loadout.LoadPrefab();
+        if (weaponPrefab == null)
+            weaponPrefab = WeaponLoadoutCatalog.LoadPrefabWithFallback(level, out targetSize);
+
+        GameObject runtimeFallbackTemplate = null;
+        if (weaponPrefab == null)
+        {
+            runtimeFallbackTemplate = CreateRuntimeEnemyFallbackWeaponTemplate();
+            weaponPrefab = runtimeFallbackTemplate;
+            targetSize = 0.55f;
+        }
+
+        if (weaponPrefab == null)
+            return;
+
+        if (equippedWeaponObject != null)
+        {
+            Destroy(equippedWeaponObject);
+            equippedWeaponObject = null;
+        }
+
+        _weaponVisibilityRepairAttempts++;
+        if (debugWeaponVisibility)
+            Debug.Log($"[EnemyWeaponVisibility] repairing {name} reason={reason} invalid={validReason} level={level} prefab={weaponPrefab.name}", this);
+
+        AttachWeaponToHand(weaponPrefab, targetSize, level);
+
+        if (runtimeFallbackTemplate != null)
+            Destroy(runtimeFallbackTemplate);
+
+        if (equippedWeaponObject != null)
+        {
+            ForceWeaponRenderable(equippedWeaponObject);
+            EnsureEnemyWeaponVisibleWorldSize(equippedWeaponObject, Mathf.Max(0.01f, targetSize));
+            int visibleLayer = LayerMask.NameToLayer("Hittable");
+            if (visibleLayer < 0) visibleLayer = gameObject.layer;
+            SetWeaponLayerRecursive(equippedWeaponObject, visibleLayer);
+        }
+
+        if (debugWeaponVisibility)
+        {
+            bool visible = WeaponIsVisiblyEquipped(equippedWeaponObject, level, out string result);
+            Debug.Log($"[EnemyWeaponVisibility] result {name} visible={visible} detail={result}", this);
+        }
+    }
+
+    private static bool WeaponIsVisiblyEquipped(GameObject weapon, int level, out string reason)
+    {
+        reason = "ok";
+        if (weapon == null)
+        {
+            reason = "missing weapon object";
+            return false;
+        }
+
+        if (weapon.transform.parent == null)
+        {
+            reason = "weapon has no hand/socket parent";
+            return false;
+        }
+
+        ForceWeaponRenderable(weapon);
+
+        int rendererCount = CountWeaponRenderers(weapon);
+        if (rendererCount <= 0)
+        {
+            reason = "no enabled weapon renderers";
+            return false;
+        }
+
+        float targetSize = WeaponLoadoutCatalog.Get(level).TargetSize;
+        float minimumWorldSize = Mathf.Clamp(Mathf.Max(0.01f, targetSize) * 0.45f, 0.14f, 0.75f);
+        float visibleSize = GetVisibleWorldSize(weapon);
+        if (visibleSize < minimumWorldSize)
+        {
+            EnsureEnemyWeaponVisibleWorldSize(weapon, Mathf.Max(0.01f, targetSize));
+            visibleSize = GetVisibleWorldSize(weapon);
+        }
+
+        if (visibleSize < minimumWorldSize)
+        {
+            reason = $"weapon mesh too small/collapsed size={visibleSize:F3} min={minimumWorldSize:F3}";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static GameObject CreateRuntimeEnemyFallbackWeaponTemplate()
+    {
+        GameObject baton = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+        baton.name = "RuntimeEnemyFallbackBaton";
+        baton.SetActive(false);
+
+        Collider collider = baton.GetComponent<Collider>();
+        if (collider != null)
+            collider.enabled = false;
+
+        Renderer renderer = baton.GetComponent<Renderer>();
+        if (renderer != null)
+        {
+            Shader shader = Shader.Find("Universal Render Pipeline/Lit");
+            if (shader == null)
+                shader = Shader.Find("Standard");
+            if (shader != null)
+            {
+                Material material = new Material(shader);
+                material.color = new Color(0.86f, 0.86f, 0.82f, 1f);
+                renderer.sharedMaterial = material;
+            }
+        }
+
+        return baton;
     }
 
     private static void ForceWeaponRenderable(GameObject weapon)

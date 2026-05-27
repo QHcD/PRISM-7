@@ -164,6 +164,7 @@ public class LevelInitialization : MonoBehaviour
             }
 
             enemy.AttachWeaponToHand(weaponPrefab, targetSize, level);
+            enemy.EnsureVisibleWeaponEquipped("level_initialization");
             string prefabName;
             string socketName;
             int rendererCount;
