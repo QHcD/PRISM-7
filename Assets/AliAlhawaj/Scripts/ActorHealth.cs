@@ -86,17 +86,17 @@ public class ActorHealth : MonoBehaviour, IDamageable
         if (agent != null)
             agent.enabled = false;
 
-        RagdollController ragdoll = GetComponent<RagdollController>();
-        if (ragdoll != null)
-            ragdoll.EnableRagdoll(Vector3.back);
-
         Collider[] colliders = GetComponentsInChildren<Collider>();
         for (int i = 0; i < colliders.Length; i++)
         {
             Collider col = colliders[i];
-            if (col != null && !col.isTrigger)
+            if (col != null && !col.isTrigger && col.gameObject == gameObject)
                 col.enabled = false;
         }
+
+        RagdollController ragdoll = GetComponent<RagdollController>();
+        if (ragdoll != null)
+            ragdoll.EnableRagdoll(Vector3.back);
 
         if (CompareTag("Player") && GameManager.Instance != null)
             GameManager.Instance.GameOver();

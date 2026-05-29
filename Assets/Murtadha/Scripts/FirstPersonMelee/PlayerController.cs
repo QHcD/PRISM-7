@@ -1549,7 +1549,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             if (Keyboard.current.spaceKey.wasPressedThisFrame)
                 HandleJumpPress();
 
-            // Tactical layout (matches enemy / RobustThirdPersonMovement): Z = JumpOver, X = Slide, C = Prone.
+            // Tactical layout: Z = JumpOver, X = Slide, C = Crouch.
             if (Keyboard.current.zKey.wasPressedThisFrame)
                 TryStartJumpOver();
 
@@ -1557,7 +1557,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
                 TryStartSlide();
 
             if (Keyboard.current.cKey.wasPressedThisFrame)
-                ToggleCrawl();
+                ToggleCrouch();
 
             if (Keyboard.current.vKey.wasPressedThisFrame)
                 TriggerTacticalAbilityPlaceholder();
@@ -1927,21 +1927,11 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
             return;
         if (_tacticalActions != null && _tacticalActions.IsActionLocked)
             return;
+        if (IsAscendingJump())
+            return;
 
         if (IsGroundedForJump())
             coyoteTimeCounter = coyoteTime;
-
-        bool wantsThruster = Keyboard.current != null
-            && Keyboard.current.leftShiftKey.isPressed
-            && moveInputSmoothed.sqrMagnitude > 0.05f;
-
-        if (Gamepad.current != null
-            && (Gamepad.current.leftShoulder.isPressed || Gamepad.current.leftTrigger.ReadValue() > 0.45f)
-            && Gamepad.current.leftStick.ReadValue().sqrMagnitude > 0.05f)
-            wantsThruster = true;
-
-        if (wantsThruster && TryStartThrusterJump())
-            return;
 
         jumpBufferCounter = jumpBufferTime;
         TryConsumeBufferedJump();
@@ -2030,7 +2020,7 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
         Vector3 frameStartPosition = transform.position;
 
         // Sprint: LeftShift only (Settings → Sprint Mode: HOLD vs TOGGLE).
-        // C = prone (tactical). Gamepad: left shoulder / left trigger while moving.
+        // C is handled in HandleActionInput() as crouch.
         bool shiftHeld = Keyboard.current != null && Keyboard.current.leftShiftKey.isPressed;
         if (Keyboard.current != null && Keyboard.current.leftShiftKey.wasPressedThisFrame && SprintModeRuntime.IsToggleMode)
             sprintToggled = !sprintToggled;
@@ -2611,7 +2601,8 @@ private static readonly Vector3 PlayerKatanaGripLocalScale = new Vector3(0.2f, 0
     }
 
     /// <summary>
-    /// Prone (C). Animator plays Prone Idle; capsule bottom stays pinned; mesh offset on body child only.
+    /// Prone/crawl helper kept for any callers that explicitly request prone.
+    /// Animator plays Prone Idle; capsule bottom stays pinned; mesh offset on body child only.
     /// </summary>
     private void ToggleCrawl()
     {

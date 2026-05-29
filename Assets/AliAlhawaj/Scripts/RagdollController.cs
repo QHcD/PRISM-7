@@ -26,6 +26,12 @@ public class RagdollController : MonoBehaviour
     public float settleVelocityThreshold = 0.08f;
     [Tooltip("Safety timeout if ragdoll never settles.")]
     public float maxFreezeWait = 12f;
+    [Tooltip("Small clearance kept between ragdoll collider bounds and the detected ground.")]
+    public float groundClearance = 0.035f;
+    [Tooltip("Extra shell used when checking if ragdoll bones are embedded in map geometry.")]
+    public float environmentDepenetrationPadding = 0.04f;
+    [Tooltip("Maximum corrective movement applied per physics step to pull corpses out of map objects.")]
+    public float maxEnvironmentDepenetrationPerStep = 0.35f;
 
     private Rigidbody[]  _boneRigidbodies;
     private Collider[]   _boneColliders;
@@ -36,6 +42,8 @@ public class RagdollController : MonoBehaviour
     private Coroutine    _freezeCoroutine;
     private PhysicsMaterial _ragdollFrictionMaterial;
     private Transform[] _boneTransforms;
+    private bool _ragdollActive;
+    private int _environmentCollisionMask;
 
     private void Awake()
     {
@@ -53,6 +61,15 @@ public class RagdollController : MonoBehaviour
             return;
 
         AlignRagdollToAnimatedPoseForEditor();
+    }
+
+    private void FixedUpdate()
+    {
+        if (!_ragdollActive)
+            return;
+
+        KeepRagdollAboveGround();
+        PushRagdollOutOfEnvironment();
     }
 
     private void OnDrawGizmos()
@@ -81,6 +98,7 @@ public class RagdollController : MonoBehaviour
         // Root Collider is disabled so it doesn't fight the bone colliders.
         if (_rootCollider != null) _rootCollider.enabled = false;
         EnsureGroundCollisionLayers();
+        _environmentCollisionMask = BuildEnvironmentCollisionMask();
         EnsureRagdollFrictionMaterial();
 
         foreach (Rigidbody rb in _boneRigidbodies)
@@ -90,12 +108,21 @@ public class RagdollController : MonoBehaviour
             rb.detectCollisions = true;
             rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
             rb.interpolation = RigidbodyInterpolation.Interpolate;
+            rb.solverIterations = Mathf.Max(rb.solverIterations, 12);
+            rb.solverVelocityIterations = Mathf.Max(rb.solverVelocityIterations, 4);
+            rb.maxDepenetrationVelocity = Mathf.Max(rb.maxDepenetrationVelocity, 4f);
         }
         foreach (Collider col in _boneColliders)
         {
             col.enabled = true;
+            col.isTrigger = false;
             col.material = _ragdollFrictionMaterial;
         }
+
+        Physics.SyncTransforms();
+        _ragdollActive = true;
+        KeepRagdollAboveGround();
+        PushRagdollOutOfEnvironment();
 
         float force = forceMagnitude > 0f ? forceMagnitude : explosionForce;
         ApplyHipImpulse(hitDirection, force);
@@ -118,6 +145,7 @@ public class RagdollController : MonoBehaviour
         if (_agent != null && _agent.isActiveAndEnabled) _agent.enabled = true;
 
         if (_rootCollider != null) _rootCollider.enabled = true;
+        _ragdollActive = false;
 
         foreach (Rigidbody rb in _boneRigidbodies)
         {
@@ -149,7 +177,15 @@ public class RagdollController : MonoBehaviour
         }
 
         foreach (Collider col in allCols)
-            if (col.gameObject != gameObject) boneCols.Add(col);
+        {
+            if (col.gameObject == gameObject)
+                continue;
+            if (col.GetComponentInParent<WeaponHitbox>() != null)
+                continue;
+            if (col.GetComponentInParent<Rigidbody>() == null)
+                continue;
+            boneCols.Add(col);
+        }
 
         _boneRigidbodies = boneRbs.ToArray();
         _boneColliders   = boneCols.ToArray();
@@ -285,12 +321,145 @@ public class RagdollController : MonoBehaviour
 
     private void FreezeRagdoll()
     {
+        KeepRagdollAboveGround();
+        PushRagdollOutOfEnvironment();
+
         foreach (Rigidbody rb in _boneRigidbodies)
         {
             rb.linearVelocity = Vector3.zero;
             rb.angularVelocity = Vector3.zero;
             rb.isKinematic = true;
         }
+
+        _ragdollActive = false;
+    }
+
+    private void KeepRagdollAboveGround()
+    {
+        if (_boneColliders == null || _boneColliders.Length == 0)
+            return;
+
+        Bounds bounds;
+        if (!TryGetRagdollBounds(out bounds))
+            return;
+
+        int mask = _environmentCollisionMask != 0 ? _environmentCollisionMask : BuildEnvironmentCollisionMask();
+        Vector3 rayOrigin = new Vector3(bounds.center.x, bounds.max.y + 1.5f, bounds.center.z);
+        if (!Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit hit, bounds.size.y + 4f, mask, QueryTriggerInteraction.Ignore))
+            return;
+        if (hit.collider != null && hit.collider.transform.IsChildOf(transform))
+            return;
+
+        float minAllowedY = hit.point.y + Mathf.Max(0.005f, groundClearance);
+        float lift = minAllowedY - bounds.min.y;
+        if (lift <= 0.001f || lift > 1.5f)
+            return;
+
+        ApplyRagdollOffset(Vector3.up * lift);
+    }
+
+    private bool TryGetRagdollBounds(out Bounds bounds)
+    {
+        bounds = default;
+        bool hasBounds = false;
+
+        for (int i = 0; i < _boneColliders.Length; i++)
+        {
+            Collider col = _boneColliders[i];
+            if (col == null || !col.enabled || col.isTrigger)
+                continue;
+
+            if (!hasBounds)
+            {
+                bounds = col.bounds;
+                hasBounds = true;
+            }
+            else
+            {
+                bounds.Encapsulate(col.bounds);
+            }
+        }
+
+        return hasBounds;
+    }
+
+    private void PushRagdollOutOfEnvironment()
+    {
+        if (_boneColliders == null || _boneColliders.Length == 0)
+            return;
+
+        int mask = _environmentCollisionMask != 0 ? _environmentCollisionMask : BuildEnvironmentCollisionMask();
+        float maxCorrection = Mathf.Max(0.01f, maxEnvironmentDepenetrationPerStep);
+        float padding = Mathf.Max(0.005f, environmentDepenetrationPadding);
+
+        for (int i = 0; i < _boneColliders.Length; i++)
+        {
+            Collider boneCollider = _boneColliders[i];
+            if (boneCollider == null || !boneCollider.enabled || boneCollider.isTrigger)
+                continue;
+
+            Bounds bounds = boneCollider.bounds;
+            Collider[] overlaps = Physics.OverlapBox(
+                bounds.center,
+                bounds.extents + Vector3.one * padding,
+                Quaternion.identity,
+                mask,
+                QueryTriggerInteraction.Ignore);
+
+            Vector3 totalCorrection = Vector3.zero;
+            for (int j = 0; j < overlaps.Length; j++)
+            {
+                Collider environmentCollider = overlaps[j];
+                if (environmentCollider == null
+                    || !environmentCollider.enabled
+                    || environmentCollider.isTrigger
+                    || environmentCollider == boneCollider
+                    || environmentCollider.transform.IsChildOf(transform))
+                    continue;
+
+                if (Physics.ComputePenetration(
+                    boneCollider,
+                    boneCollider.transform.position,
+                    boneCollider.transform.rotation,
+                    environmentCollider,
+                    environmentCollider.transform.position,
+                    environmentCollider.transform.rotation,
+                    out Vector3 direction,
+                    out float distance))
+                {
+                    if (distance > 0.0005f)
+                        totalCorrection += direction * (distance + padding);
+                }
+            }
+
+            if (totalCorrection.sqrMagnitude <= 0.000001f)
+                continue;
+
+            if (totalCorrection.magnitude > maxCorrection)
+                totalCorrection = totalCorrection.normalized * maxCorrection;
+
+            ApplyRagdollOffset(totalCorrection);
+        }
+    }
+
+    private void ApplyRagdollOffset(Vector3 offset)
+    {
+        if (offset.sqrMagnitude <= 0.000001f || _boneRigidbodies == null)
+            return;
+
+        for (int i = 0; i < _boneRigidbodies.Length; i++)
+        {
+            Rigidbody rb = _boneRigidbodies[i];
+            if (rb == null)
+                continue;
+
+            if (rb.isKinematic)
+                rb.transform.position += offset;
+            else
+                rb.position += offset;
+        }
+
+        Physics.SyncTransforms();
     }
 
     private IEnumerator FreezeWhenSettled()
@@ -338,13 +507,49 @@ public class RagdollController : MonoBehaviour
     private void EnsureGroundCollisionLayers()
     {
         int enemyLayer = gameObject.layer;
-        int defaultLayer = LayerMask.NameToLayer("Default");
-        int environmentLayer = LayerMask.NameToLayer("Environment");
+        AllowCollisionWithLayer(enemyLayer, "Default");
+        AllowCollisionWithLayer(enemyLayer, "Environment");
+        AllowCollisionWithLayer(enemyLayer, "Ground");
+        AllowCollisionWithLayer(enemyLayer, "Map");
+        AllowCollisionWithLayer(enemyLayer, "LevelContent");
+        AllowCollisionWithLayer(enemyLayer, "Building");
+        AllowCollisionWithLayer(enemyLayer, "StaticObstacle");
+        AllowCollisionWithLayer(enemyLayer, "Wall");
+        AllowCollisionWithLayer(enemyLayer, "Prop");
+    }
 
-        if (defaultLayer >= 0)
-            Physics.IgnoreLayerCollision(enemyLayer, defaultLayer, false);
-        if (environmentLayer >= 0)
-            Physics.IgnoreLayerCollision(enemyLayer, environmentLayer, false);
+    private static void AllowCollisionWithLayer(int sourceLayer, string targetLayerName)
+    {
+        int targetLayer = LayerMask.NameToLayer(targetLayerName);
+        if (targetLayer >= 0)
+            Physics.IgnoreLayerCollision(sourceLayer, targetLayer, false);
+    }
+
+    private static int BuildEnvironmentCollisionMask()
+    {
+        int mask = 0;
+        AddLayer(ref mask, "Default");
+        AddLayer(ref mask, "Environment");
+        AddLayer(ref mask, "Ground");
+        AddLayer(ref mask, "Map");
+        AddLayer(ref mask, "LevelContent");
+        AddLayer(ref mask, "Building");
+        AddLayer(ref mask, "Buildings");
+        AddLayer(ref mask, "StaticObstacle");
+        AddLayer(ref mask, "Wall");
+        AddLayer(ref mask, "Walls");
+        AddLayer(ref mask, "Obstacle");
+        AddLayer(ref mask, "Prop");
+        AddLayer(ref mask, "Props");
+        AddLayer(ref mask, "Terrain");
+        return mask != 0 ? mask : Physics.DefaultRaycastLayers;
+    }
+
+    private static void AddLayer(ref int mask, string layerName)
+    {
+        int layer = LayerMask.NameToLayer(layerName);
+        if (layer >= 0)
+            mask |= 1 << layer;
     }
 
     private void EnsureRagdollFrictionMaterial()

@@ -2675,10 +2675,22 @@ public class EnemyController : MonoBehaviour, IDamageable
 
         int defaultLayer = LayerMask.NameToLayer("Default");
         int environmentLayer = LayerMask.NameToLayer("Environment");
+        int groundLayer = LayerMask.NameToLayer("Ground");
+        int mapLayer = LayerMask.NameToLayer("Map");
+        int levelContentLayer = LayerMask.NameToLayer("LevelContent");
+        int staticObstacleLayer = LayerMask.NameToLayer("StaticObstacle");
         if (defaultLayer >= 0)
             Physics.IgnoreLayerCollision(gameObject.layer, defaultLayer, false);
         if (environmentLayer >= 0)
             Physics.IgnoreLayerCollision(gameObject.layer, environmentLayer, false);
+        if (groundLayer >= 0)
+            Physics.IgnoreLayerCollision(gameObject.layer, groundLayer, false);
+        if (mapLayer >= 0)
+            Physics.IgnoreLayerCollision(gameObject.layer, mapLayer, false);
+        if (levelContentLayer >= 0)
+            Physics.IgnoreLayerCollision(gameObject.layer, levelContentLayer, false);
+        if (staticObstacleLayer >= 0)
+            Physics.IgnoreLayerCollision(gameObject.layer, staticObstacleLayer, false);
 
         if (_ragdoll == null)
             _ragdoll = GetComponent<RagdollController>();
@@ -2773,6 +2785,8 @@ public class EnemyController : MonoBehaviour, IDamageable
         _rb.useGravity = true;
         _rb.constraints = RigidbodyConstraints.None;
         _rb.detectCollisions = true;
+        _rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+        _rb.interpolation = RigidbodyInterpolation.Interpolate;
         _rb.mass = Mathf.Max(20f, _rb.mass);
         _rb.linearDamping = 0.15f;
         _rb.angularDamping = 0.05f;
